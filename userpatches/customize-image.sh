@@ -50,4 +50,4 @@ chmod 0755 /run/sshd
 # Create the gateway application's directory inside the image.
 install -d -m 0755 -o root -g root /opt/widelapse
 
-sudo apt update
+bash /tmp/overlay/widelapse-rauc/install.sh

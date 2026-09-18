@@ -2,6 +2,14 @@
 
 Build a minimal Debian 13 (Trixie) Armbian image for the Orange Pi Zero 3.
 
+The current configuration includes a **development RAUC A/B layout**. It requires
+fresh flashing; it cannot update the old single-partition layout in place.
+Two fixed 3 GiB OS slots leave the remaining SD-card space for `/opt/widelapse`.
+The data partition expands automatically on 32 GB and 64 GB cards.
+See [RAUC setup, signing, builds, and hardware acceptance](docs/RAUC.md) before building.
+A development signing key is local under ignored `secrets/`; the public
+verification certificate is tracked in `userpatches/overlay/rauc-keyring.pem`.
+
 ## Repository layout
 
 ```text
@@ -16,7 +24,7 @@ widelapse_image/
 ```
 
 Edit the top-level `userpatches/` directory, not the copy under
-`build/userpatches/`. Only the top-level directory is stored in this repository.
+`build/userpatches/`. Only the top-level directory is stored in this repository, excluding the ignored credential inputs.
 Armbian's source, downloads, caches, logs, and images stay inside `build/`.
 Armbian is a separate upstream checkout, not a submodule of this project.
 
@@ -42,7 +50,11 @@ external packages and source downloads can change too.
 
 From this repository's root:
 
+Supply the ignored `userpatches/overlay/authorized_keys` and
+`userpatches/overlay/root-password.hash` first. Follow the RAUC guide for signing.
+
 ```bash
+bash scripts/check-rauc-inputs.sh
 bash build-image.sh
 ```
 
@@ -79,7 +91,7 @@ Run from this repository's root:
 
 ```bash
 git status --short
-git add .gitignore README.md armbian-build-commit.txt build-image.sh userpatches/
+git add .gitignore README.md armbian-build-commit.txt build-image.sh userpatches/ scripts/ docs/ tests/
 git diff --cached --stat
 git commit -m "Track Widelapse image configuration and build instructions"
 git push -u origin HEAD

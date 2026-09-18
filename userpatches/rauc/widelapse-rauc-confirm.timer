@@ -1,0 +1,9 @@
+[Unit]
+Description=Check Widelapse boot health after 90 seconds
+
+[Timer]
+OnBootSec=90
+Unit=widelapse-rauc-confirm.service
+
+[Install]
+WantedBy=timers.target

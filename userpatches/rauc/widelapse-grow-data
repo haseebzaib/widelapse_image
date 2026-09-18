@@ -1,0 +1,31 @@
+#!/bin/bash
+set -euo pipefail
+# Runs before mounting data. Expand only p4 on the verified factory layout.
+python3 - <<'PYLAYOUT'
+import json, subprocess
+p=json.loads(subprocess.check_output(['sfdisk','--json','/dev/mmcblk0']))['partitiontable']
+parts=p['partitions']
+assert p['label']=='dos' and p['id']=='0x574c4150', 'Not a Widelapse A/B disk'
+assert len(parts)==4 and p.get('sectorsize',512)==512, 'Unexpected disk geometry'
+assert [x['start'] for x in parts]==[16384,540672,6832128,13123584], 'Wrong partition offsets'
+assert [x['size'] for x in parts[:3]]==[524288,6291456,6291456], 'Wrong slot sizes'
+assert parts[3]['node']=='/dev/mmcblk0p4', 'Wrong data partition'
+PYLAYOUT
+set +e
+result=$(growpart /dev/mmcblk0 4 2>&1)
+rc=$?
+set -e
+printf '%s\n' "$result"
+if (( rc != 0 )); then
+    # growpart returns 1 for an already-full partition, which is expected.
+    [[ $rc == 1 && $result == NOCHANGE:* ]] || exit "$rc"
+fi
+udevadm settle
+# Serialize fsck with resize: fstab deliberately has pass=0 for this filesystem.
+set +e
+e2fsck -p /dev/mmcblk0p4
+rc=$?
+set -e
+(( rc == 0 || rc == 1 )) || exit "$rc"
+# Also runs on later boots: retries safely after an interrupted first resize.
+resize2fs /dev/mmcblk0p4

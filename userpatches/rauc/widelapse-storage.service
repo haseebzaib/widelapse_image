@@ -1,0 +1,12 @@
+[Unit]
+Description=Prepare Widelapse persistent directories and SSH identity
+RequiresMountsFor=/opt/widelapse
+Before=ssh.service rauc.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/widelapse-storage
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target

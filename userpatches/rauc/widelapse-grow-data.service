@@ -1,0 +1,11 @@
+[Unit]
+Description=Expand Widelapse data partition to fill the SD card
+DefaultDependencies=no
+Requires=dev-mmcblk0p4.device
+After=dev-mmcblk0p4.device systemd-remount-fs.service
+Before=opt-widelapse.mount
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/widelapse-grow-data
+RemainAfterExit=yes

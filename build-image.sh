@@ -9,7 +9,12 @@ if [[ ! -f build/compile.sh ]]; then
     exit 1
 fi
 
+# Validate provisioning inputs before invoking the privileged build framework.
+bash scripts/check-rauc-inputs.sh
 mkdir -p build/userpatches
 cp -a userpatches/. build/userpatches/
+# Keep integration assets separate from public-key/password overlay inputs.
+mkdir -p build/userpatches/overlay/widelapse-rauc
+cp -a userpatches/rauc/. build/userpatches/overlay/widelapse-rauc/
 cd build
 exec ./compile.sh build widelapse "$@"

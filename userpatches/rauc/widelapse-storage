@@ -1,0 +1,16 @@
+#!/bin/bash
+set -euo pipefail
+mountpoint -q /opt/widelapse
+actual=$(findmnt -n -o SOURCE --target /opt/widelapse)
+[[ $(readlink -f "$actual") == /dev/mmcblk0p4 ]]
+[[ $(blkid -s PARTUUID -o value /dev/mmcblk0p4) == 574c4150-04 ]]
+install -d -m 700 /opt/widelapse/identity /opt/widelapse/identity/ssh
+install -d -m 755 /opt/widelapse/config /opt/widelapse/data /opt/widelapse/releases
+install -d -m 700 /opt/widelapse/updates /opt/widelapse/rauc
+# Preserve SSH server identity across A/B switches. Never regenerate intact keys.
+key=/opt/widelapse/identity/ssh/ssh_host_ed25519_key
+if [[ ! -s $key ]]; then
+    rm -f "$key" "$key.pub"
+    ssh-keygen -q -t ed25519 -N '' -f "$key"
+fi
+chmod 600 "$key"
