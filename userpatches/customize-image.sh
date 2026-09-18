@@ -1,6 +1,9 @@
 #!/bin/bash
 set -euo pipefail
 
+# Set the local console login banner.
+printf 'Widelapse Gateway \\l\n\n' > /etc/issue
+
 # Stop the build if required provisioning inputs are missing.
 test -s /tmp/overlay/authorized_keys
 test -s /tmp/overlay/root-password.hash
@@ -46,3 +49,5 @@ chmod 0755 /run/sshd
 
 # Create the gateway application's directory inside the image.
 install -d -m 0755 -o root -g root /opt/widelapse
+
+sudo apt update
