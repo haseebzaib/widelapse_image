@@ -53,7 +53,7 @@ Changing this layout or disk ID is a new factory-image ABI, not an ordinary OTA.
   4 MiB + 64 KiB, matching the U-Boot configuration.
 - `userpatches/rauc/install.sh`: invoked inside the image by customization.
 - `scripts/build-rauc-bundle.sh`: signs a rootfs export into an OTA bundle.
-- `/usr/local/sbin/widelapse-update` on the board: downloads from your HTTPS URL,
+- `/usr/local/sbin/widelapse-update` on the board: downloads from your HTTP/HTTPS URL,
   verifies signatures, installs using RAUC; never reboots automatically.
 
 `build-image.sh` stages the integration assets under the temporary build overlay.

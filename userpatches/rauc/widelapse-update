@@ -1,14 +1,18 @@
 #!/bin/bash
 set -euo pipefail
 [[ $EUID == 0 ]] || { echo 'Run as root.' >&2; exit 1; }
-[[ $# == 1 && $1 == https://* ]] || { echo 'Usage: widelapse-update https://server/update.raucb' >&2; exit 2; }
+[[ $# == 1 && ( $1 == https://* || $1 == http://* ) ]] || { echo 'Usage: widelapse-update http[s]://server/update.raucb' >&2; exit 2; }
+command -v unsquashfs >/dev/null || { echo 'Install squashfs-tools before downloading an update.' >&2; exit 1; }
+# HTTP supports the local test server; RAUC signatures remain mandatory.
+protocols='=https'
+[[ $1 != http://* ]] || protocols='=http,https'
 mountpoint -q /opt/widelapse
 exec 9>/run/lock/widelapse-update.lock
 flock -n 9 || { echo 'Another download/install is running.' >&2; exit 1; }
 install -d -m 700 /opt/widelapse/updates
 bundle=$(mktemp /opt/widelapse/updates/update.XXXXXX.raucb)
 trap 'rm -f "$bundle"' EXIT
-curl --fail --location --proto '=https' --proto-redir '=https' --retry 3 \
+curl --fail --location --proto "$protocols" --proto-redir "$protocols" --retry 3 \
     --connect-timeout 30 --output "$bundle" "$1"
 # Local signature verification, followed by RAUC's own install verification.
 rauc --keyring=/etc/rauc/keyring.pem info "$bundle"

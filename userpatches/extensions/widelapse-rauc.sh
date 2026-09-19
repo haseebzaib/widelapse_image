@@ -6,7 +6,7 @@ function user_config__widelapse_rauc() {
     declare -g OFFSET=8 BOOTSIZE=256 BOOTFS_TYPE=ext4 UEFISIZE=0
     declare -g FIXED_IMAGE_SIZE=7432 USE_HOOK_FOR_PARTITION=yes
     EXTRA_IMAGE_SUFFIXES+=("-rauc-ab")
-    add_packages_to_image rauc rauc-service dbus u-boot-tools libubootenv-tool cloud-guest-utils curl ca-certificates python3 e2fsprogs util-linux
+    add_packages_to_image rauc rauc-service dbus squashfs-tools u-boot-tools libubootenv-tool cloud-guest-utils curl ca-certificates python3 e2fsprogs util-linux
 }
 
 function post_config_uboot_target__widelapse_rauc() {

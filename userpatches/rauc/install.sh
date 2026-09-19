@@ -25,6 +25,7 @@ systemctl enable widelapse-storage.service widelapse-rauc-confirm.timer
 # RAUC is D-Bus activated; ssh/rauc require the persistent storage service.
 test -f /usr/lib/systemd/system/rauc.service
 test -f /usr/lib/systemd/system/dbus.socket
+command -v unsquashfs >/dev/null
 systemctl add-wants sockets.target dbus.socket
 install -d /etc/systemd/system.conf.d
 # sunxi-wdt supports a maximum hardware timeout of 16 seconds.
