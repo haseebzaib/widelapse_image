@@ -7,6 +7,7 @@ fresh flashing; it cannot update the old single-partition layout in place.
 Two fixed 3 GiB OS slots leave the remaining SD-card space for `/opt/widelapse`.
 The data partition expands automatically on 32 GB and 64 GB cards.
 See [RAUC setup, signing, builds, and hardware acceptance](docs/RAUC.md) before building.
+For creating and installing an update, follow [the signed OTA walkthrough](docs/OTA.md).
 A development signing key is local under ignored `secrets/`; the public
 verification certificate is tracked in `userpatches/overlay/rauc-keyring.pem`.
 

@@ -2,5 +2,6 @@
 /userpatches/overlay/authorized_keys
 /userpatches/overlay/root-password.hash
 /secrets/
+/ota/
 /*.raucb
 __pycache__/
