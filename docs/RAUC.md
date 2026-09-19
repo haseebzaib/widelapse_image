@@ -157,7 +157,7 @@ Do not require access to an external internet endpoint just to accept a healthy
 local system. A failed check leaves the slot unconfirmed. It does not immediately
 reboot; a manual reboot/watchdog reset is needed to consume the next attempt.
 
-The kernel has `panic=10`. systemd requests a 30-second hardware watchdog after
+The kernel has `panic=10`. systemd requests a 16-second hardware watchdog after
 userspace starts, **if a working watchdog exists**. We have not qualified an early
 boot watchdog handoff: a kernel hard hang before systemd may require a manual
 power cycle. Do not claim unattended recovery from all failures until tested.
@@ -216,6 +216,12 @@ capture the full TTL log; do not guess new raw offsets.
 OS OTA replaces the inactive rootfs including its kernel and DTB. It does not
 update the partition table, shared selector, SPL/U-Boot, SPI flash, or data.
 The selector and bootloader are a fixed factory ABI in this prototype.
+
+The factory selector enables verbose kernel and systemd startup output on
+`ttyS0` at 115200 baud. This is stored in p1's `boot.scr`, so an OS-only bundle
+cannot enable it on an older factory image. Reflashing the updated factory
+image installs the new selector but erases existing card data. A separate
+maintenance update to the selector is not an A/B-protected RAUC update.
 
 Keep application releases and mutable data separate under `/opt/widelapse`.
 An OS rollback does not roll back shared application files or database schemas.

@@ -59,8 +59,8 @@ class GrowTests(unittest.TestCase):
                 'sfdisk': '#!/bin/sh\ncat "$FAKE/table.json"\n',
                 'growpart': '#!/bin/sh\nprintf "%s\\n" "$GROW_MESSAGE"\nexit "$GROW_STATUS"\n',
                 'udevadm': '#!/bin/sh\nexit 0\n',
-                'e2fsck': '#!/bin/sh\nexit "$FSCK_STATUS"\n',
-                'resize2fs': '#!/bin/sh\necho resize >> "$FAKE/actions"\n',
+                'e2fsck': '#!/bin/sh\nfor arg in "$@"; do\n  if [ "$arg" = -f ]; then touch "$FAKE/forced-check"; fi\ndone\nexit "$FSCK_STATUS"\n',
+                'resize2fs': '#!/bin/sh\n[ -f "$FAKE/forced-check" ] || exit 1\necho resize >> "$FAKE/actions"\n',
             }
             for name, body in commands.items():
                 (path/name).write_text(body); (path/name).chmod(0o755)

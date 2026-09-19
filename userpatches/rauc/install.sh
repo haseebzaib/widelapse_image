@@ -23,5 +23,9 @@ install -m 644 "$assets/00-widelapse-hostkey.conf" /etc/ssh/sshd_config.d/00-wid
 systemctl mask armbian-resize-filesystem.service
 systemctl enable widelapse-storage.service widelapse-rauc-confirm.timer
 # RAUC is D-Bus activated; ssh/rauc require the persistent storage service.
+test -f /usr/lib/systemd/system/rauc.service
+test -f /usr/lib/systemd/system/dbus.socket
+systemctl add-wants sockets.target dbus.socket
 install -d /etc/systemd/system.conf.d
-printf '[Manager]\nRuntimeWatchdogSec=30s\nRebootWatchdogSec=2min\n' > /etc/systemd/system.conf.d/widelapse-watchdog.conf
+# sunxi-wdt supports a maximum hardware timeout of 16 seconds.
+printf '[Manager]\nRuntimeWatchdogSec=16s\nRebootWatchdogSec=16s\n' > /etc/systemd/system.conf.d/widelapse-watchdog.conf

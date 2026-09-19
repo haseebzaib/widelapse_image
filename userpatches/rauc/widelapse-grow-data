@@ -22,8 +22,9 @@ if (( rc != 0 )); then
 fi
 udevadm settle
 # Serialize fsck with resize: fstab deliberately has pass=0 for this filesystem.
+# resize2fs may require a full check even when ext4's clean flag is set.
 set +e
-e2fsck -p /dev/mmcblk0p4
+e2fsck -f -p /dev/mmcblk0p4
 rc=$?
 set -e
 (( rc == 0 || rc == 1 )) || exit "$rc"

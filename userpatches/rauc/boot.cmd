@@ -23,7 +23,7 @@ for slot in ${BOOT_ORDER}; do
         if saveenv; then
             echo "Widelapse: trying slot ${slot} on mmc 0:${slotpart}"
             if part uuid mmc 0:${slotpart} rootuuid; then
-                setenv bootargs "root=PARTUUID=${rootuuid} rootwait rootfstype=ext4 console=ttyS0,115200 console=tty1 loglevel=4 panic=10 rauc.slot=${slot} cgroup_enable=memory"
+                setenv bootargs "root=PARTUUID=${rootuuid} rootwait rootfstype=ext4 console=ttyS0,115200 loglevel=7 ignore_loglevel systemd.show_status=1 systemd.log_level=info systemd.log_target=console panic=10 rauc.slot=${slot} cgroup_enable=memory"
                 if load mmc 0:${slotpart} ${kernel_addr_r} /boot/Image; then
                     if load mmc 0:${slotpart} ${ramdisk_addr_r} /boot/uInitrd; then
                         if load mmc 0:${slotpart} ${fdt_addr_r} /boot/dtb/allwinner/sun50i-h618-orangepi-zero3.dtb; then
