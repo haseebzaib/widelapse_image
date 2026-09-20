@@ -1,9 +1,9 @@
 [Unit]
 Description=Confirm a healthy Widelapse OS boot
-Requires=widelapse-storage.service rauc.service
-After=widelapse-storage.service rauc.service ssh.service
+Requires=widelapse-init-ota.service rauc.service
+After=widelapse-init-ota.service rauc.service ssh.service
 
 [Service]
 Type=oneshot
-ExecStart=/usr/local/sbin/widelapse-rauc-confirm
+ExecStart=/usr/local/bin/widelapse-rauc-confirm
 TimeoutStartSec=90

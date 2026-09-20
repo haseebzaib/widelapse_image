@@ -66,7 +66,7 @@ class GrowTests(unittest.TestCase):
                 (path/name).write_text(body); (path/name).chmod(0o755)
             env={**os.environ, 'PATH':td+':'+os.environ['PATH'], 'FAKE':td,
                  'GROW_MESSAGE':message, 'GROW_STATUS':str(status), 'FSCK_STATUS':str(fsck_status)}
-            result=subprocess.run(['bash',str(ASSETS/'widelapse-grow-data')], env=env, capture_output=True)
+            result=subprocess.run(['bash',str(ROOT/'userpatches/device-setup/widelapse-grow-data')], env=env, capture_output=True)
             return result.returncode, (path/'actions').exists()
 
     def table(self):

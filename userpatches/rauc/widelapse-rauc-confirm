@@ -8,8 +8,8 @@ probe=$(mktemp /opt/widelapse/rauc/.health.XXXXXX)
 rm -f "$probe"
 [[ $(fw_printenv -n BOOT_ORDER) == 'A B' || $(fw_printenv -n BOOT_ORDER) == 'B A' ]]
 if [[ -e /etc/widelapse/require-application-health ]]; then
-    test -x /usr/local/libexec/widelapse-application-health
-    timeout 60 /usr/local/libexec/widelapse-application-health
+    test -x /usr/local/bin/widelapse-application-health
+    timeout 60 /usr/local/bin/widelapse-application-health
 fi
 # 'mark-good' resets attempts; it does not activate another slot.
 rauc status mark-good booted

@@ -29,7 +29,7 @@ No rootfs expansion is allowed; Armbian's root-resize service is masked.
 A card reporting 29.7 GiB leaves roughly **23.4 GiB** for data before ext4
 metadata. A nominal 64 GB card leaves roughly **53.3 GiB**. Data ext4 uses zero
 reserved-block percentage; the gateway must still manage free space and picture
-retention. Downloads also need space in `/opt/widelapse/updates`.
+retention. Downloads also need space in `/opt/widelapse/rauc/updates`.
 
 The SD must enumerate as Linux `/dev/mmcblk0` and U-Boot `mmc 0`; Linux mmcblk0
 was confirmed on this board. U-Boot numbering and the new bootloader still need
@@ -51,9 +51,12 @@ Changing this layout or disk ID is a new factory-image ABI, not an ordinary OTA.
 - `userpatches/rauc/system.conf`: two ext4 slots, signed plain bundles, persistent status.
 - `userpatches/rauc/fw_env.config`: redundant 64 KiB environments at 4 MiB and
   4 MiB + 64 KiB, matching the U-Boot configuration.
-- `userpatches/rauc/install.sh`: invoked inside the image by customization.
+- `userpatches/device-setup/`: data partition growth, mount verification and
+  persistent SSH identity. See [device setup](../userpatches/device-setup/README.md).
+- `userpatches/rauc/install.sh`: installs OTA services; `widelapse-init-ota`
+  creates `rauc/` and `rauc/updates/` after the persistent mount is verified.
 - `scripts/build-rauc-bundle.sh`: signs a rootfs export into an OTA bundle.
-- `/usr/local/sbin/widelapse-update` on the board: downloads from your HTTP/HTTPS URL,
+- `/usr/local/bin/widelapse-update` on the board: downloads from your HTTP/HTTPS URL,
   verifies signatures, installs using RAUC; never reboots automatically.
 
 `build-image.sh` stages the integration assets under the temporary build overlay.
@@ -150,7 +153,7 @@ storage, the SSH service/config, and boot environment access before calling
 `rauc status mark-good booted`. **By default this confirms OS health only.**
 
 Before unattended application deployment, provide an executable
-`/usr/local/libexec/widelapse-application-health` in the image and create
+`/usr/local/bin/widelapse-application-health` in the image and create
 `/etc/widelapse/require-application-health`. Then confirmation also requires that
 check to succeed within 60 seconds (include gateway service and camera checks).
 Do not require access to an external internet endpoint just to accept a healthy
@@ -177,13 +180,14 @@ it does not silently reset counters and loop forever.
    df -h /opt/widelapse
    fw_printenv BOOT_ORDER BOOT_A_LEFT BOOT_B_LEFT
    rauc status
-   systemctl status widelapse-grow-data widelapse-storage --no-pager
+   systemctl status widelapse-grow-data widelapse-init-directories widelapse-init-identity widelapse-init-ota --no-pager
    systemctl status widelapse-rauc-confirm.timer --no-pager
    ```
 
 3. Wait 90 seconds; inspect `journalctl -u widelapse-rauc-confirm`. Confirm the
    active slot is good. Check root password and key-only SSH still work.
-4. Create `/opt/widelapse/data/ota-survival-test`. Record its checksum and the SSH
+4. Create the test directory with `mkdir -p /opt/widelapse/data`, then create
+   `/opt/widelapse/data/ota-survival-test`. Record its checksum and the SSH
    host-key fingerprint. Install a signed second build, reboot, confirm slot B,
    and verify both are unchanged. Repeat B-to-A.
 5. Build a test candidate containing `require-application-health` and a health

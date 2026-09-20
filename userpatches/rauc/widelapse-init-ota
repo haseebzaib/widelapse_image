@@ -1,0 +1,4 @@
+#!/bin/bash
+set -euo pipefail
+mountpoint -q /opt/widelapse
+install -d -m 700 /opt/widelapse/rauc /opt/widelapse/rauc/updates

@@ -7,5 +7,5 @@ Before=opt-widelapse.mount
 
 [Service]
 Type=oneshot
-ExecStart=/usr/local/sbin/widelapse-grow-data
+ExecStart=/usr/local/bin/widelapse-grow-data
 RemainAfterExit=yes

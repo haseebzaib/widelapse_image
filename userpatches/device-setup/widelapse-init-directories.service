@@ -1,0 +1,11 @@
+[Unit]
+Description=Verify Widelapse persistent storage
+RequiresMountsFor=/opt/widelapse
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/widelapse-init-directories
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target

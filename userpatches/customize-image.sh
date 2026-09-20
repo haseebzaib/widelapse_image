@@ -47,7 +47,5 @@ chmod 0755 /run/sshd
 /usr/sbin/sshd -t
 
 
-# Create the gateway application's directory inside the image.
-install -d -m 0755 -o root -g root /opt/widelapse
-
+bash /tmp/overlay/widelapse-device-setup/install.sh
 bash /tmp/overlay/widelapse-rauc/install.sh

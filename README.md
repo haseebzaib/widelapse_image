@@ -20,7 +20,9 @@ widelapse_image/
 ├── armbian-build-commit.txt       # Recorded Armbian framework revision
 ├── build-image.sh                # Copies customizations and starts the build
 ├── userpatches/                  # Our configuration, patches, and image scripts
-│   └── config-widelapse.conf
+│   ├── config-widelapse.conf
+│   ├── device-setup/             # Persistent mount and SSH identity setup
+│   └── rauc/                     # OTA configuration and scripts
 └── build/                       # Local Armbian checkout; ignored by Git
 ```
 
@@ -74,6 +76,9 @@ Images appear in `build/output/images/`; logs appear in `build/output/logs/`.
 The copy preserves other local files. If you remove or rename a customization,
 also remove its old copy from `build/userpatches/` before rebuilding, or use a
 fresh checkout. Avoid running two builds in the same checkout at once.
+
+See [device setup and persistent directories](userpatches/device-setup/README.md)
+for where to change `/opt/widelapse` initialization.
 
 ## Add customizations
 

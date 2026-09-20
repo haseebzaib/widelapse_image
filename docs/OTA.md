@@ -82,6 +82,7 @@ systemctl --failed --no-pager
 rauc status
 df -h /opt/widelapse
 date -u
+mkdir -p /opt/widelapse/data /opt/widelapse/rauc/updates
 printf 'Widelapse OTA persistence test\n' > /opt/widelapse/data/ota-survival-test
 sha256sum /opt/widelapse/data/ota-survival-test
 ```
@@ -98,16 +99,16 @@ On the laptop (replace the board IP if it changed):
 ```bash
 scp -i ~/.ssh/widelapse_ed25519 \
   ota/widelapse-0.1.1.raucb ota/widelapse-0.1.1.raucb.sha256 \
-  root@10.42.0.34:/opt/widelapse/updates/
+  root@10.42.0.34:/opt/widelapse/rauc/updates/
 ```
 
 On the board:
 
 ```bash
-cd /opt/widelapse/updates
+cd /opt/widelapse/rauc/updates
 sha256sum -c widelapse-0.1.1.raucb.sha256
 rauc --keyring=/etc/rauc/keyring.pem info widelapse-0.1.1.raucb
-rauc install /opt/widelapse/updates/widelapse-0.1.1.raucb
+rauc install /opt/widelapse/rauc/updates/widelapse-0.1.1.raucb
 ```
 
 The checksum checks transfer integrity; RAUC's signature check authenticates
@@ -141,11 +142,11 @@ The first factory image's `widelapse-update` only accepts HTTPS. For this first
 HTTP update, download and install explicitly:
 
 ```bash
-cd /opt/widelapse/updates
+cd /opt/widelapse/rauc/updates
 curl --fail --location --output widelapse-0.1.1.raucb \
   http://10.42.0.1:8000/widelapse-0.1.1.raucb
 rauc --keyring=/etc/rauc/keyring.pem info widelapse-0.1.1.raucb
-rauc install /opt/widelapse/updates/widelapse-0.1.1.raucb
+rauc install /opt/widelapse/rauc/updates/widelapse-0.1.1.raucb
 ```
 
 Run these sequentially and stop if any command fails. After booting the corrected

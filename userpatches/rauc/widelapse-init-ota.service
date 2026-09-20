@@ -1,0 +1,13 @@
+[Unit]
+Description=Prepare Widelapse persistent OTA directories
+RequiresMountsFor=/opt/widelapse
+Requires=widelapse-init-directories.service
+After=widelapse-init-directories.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/widelapse-init-ota
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target

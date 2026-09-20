@@ -9,8 +9,8 @@ protocols='=https'
 mountpoint -q /opt/widelapse
 exec 9>/run/lock/widelapse-update.lock
 flock -n 9 || { echo 'Another download/install is running.' >&2; exit 1; }
-install -d -m 700 /opt/widelapse/updates
-bundle=$(mktemp /opt/widelapse/updates/update.XXXXXX.raucb)
+install -d -m 700 /opt/widelapse/rauc/updates
+bundle=$(mktemp /opt/widelapse/rauc/updates/update.XXXXXX.raucb)
 trap 'rm -f "$bundle"' EXIT
 curl --fail --location --proto "$protocols" --proto-redir "$protocols" --retry 3 \
     --connect-timeout 30 --output "$bundle" "$1"
