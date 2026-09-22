@@ -213,6 +213,7 @@ docker run --rm --cap-add NET_ADMIN --cap-add NET_RAW \
   /smoke.sh /assets
 ```
 
-This uses Docker's isolated network, never host networking. The test skips only
-replacement of Docker's bind-mounted `/etc/resolv.conf`; real image installation
-sets the systemd-resolved stub symlink normally.
+This uses Docker's isolated network, never host networking, and runs the installer
+without modifications. The installer preserves the build-time `/etc/resolv.conf`
+so Armbian's subsequent apt operations retain DNS. Armbian itself creates the
+systemd-resolved stub symlink in `post_debootstrap_tweaks`, after package operations.

@@ -15,7 +15,8 @@ printf 'auto lo\niface lo inet loopback\n' > /etc/network/interfaces
 systemctl mask systemd-networkd.service systemd-networkd.socket systemd-networkd-wait-online.service networking.service NetworkManager-wait-online.service
 # Loose reverse-path filtering is required for replies on standby uplinks.
 printf 'net.ipv4.conf.all.rp_filter=2\nnet.ipv4.conf.default.rp_filter=2\n' > /etc/sysctl.d/90-widelapse-network.conf
-ln -sfn /run/systemd/resolve/stub-resolv.conf /etc/resolv.conf
+# Preserve the build-time resolver: Armbian still runs apt after customization.
+# Its post_debootstrap_tweaks creates the resolved stub symlink at finalization.
 systemctl enable NetworkManager.service ModemManager.service systemd-resolved.service systemd-timesyncd.service widelapse-network.service
 for tool in nmcli mmcli qmicli rfkill iw; do
     command -v "$tool" >/dev/null

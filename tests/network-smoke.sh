@@ -11,9 +11,6 @@ apt-get install -y -qq --no-install-recommends network-manager modemmanager pyth
 fi
 mkdir -p /tmp/overlay/widelapse-network
 cp -a "$assets/." /tmp/overlay/widelapse-network/
-# Docker bind-mounts resolv.conf; a real image chroot does not. Skip only that
-# symlink replacement in this disposable test copy of the installer.
-sed -i '/^ln -sfn .*resolv.conf$/d' /tmp/overlay/widelapse-network/install.sh
 bash /tmp/overlay/widelapse-network/install.sh
 python3 - <<'PY'
 import runpy

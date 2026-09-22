@@ -84,6 +84,27 @@ fresh checkout. Avoid running two builds in the same checkout at once.
 See [device setup and persistent directories](userpatches/device-setup/README.md)
 for where to change `/opt/widelapse` initialization.
 
+## Pinned kernel
+
+`userpatches/config-widelapse.conf` pins Linux **6.18.52** to commit
+`8f3741e6feb045da5b406df0a80b42a1adfb289b` using `KERNELBRANCH=commit:...`.
+This is the revision recorded in the working A/B image's build log and cached
+kernel packages (`6.18.52-S8f37-...`). It replaces the moving `linux-6.18.y`
+branch. Keep `BRANCH=current` for the existing board configuration and patches.
+
+After interrupting an older build, let cleanup finish before running
+`bash build-image.sh` again. The new configuration applies to the next build,
+not a process already running. The log should resolve the pinned commit and
+select `6.18.52-S8f37-...`; matching cached packages can be reused. A missing or
+invalidated package cache may still require a kernel source download/build.
+
+Update this commit deliberately after testing boot, Ethernet, Wi-Fi, USB cellular,
+camera and OTA/rollback. Do not leave security updates unreviewed indefinitely.
+This pins the kernel source used by image builds; it does not prevent package
+updates on a running board, freeze Debian packages or pin the Docker `latest`
+image. The Armbian framework revision remains recorded separately in
+`armbian-build-commit.txt`.
+
 ## Add customizations
 
 Put future customizations under the tracked `userpatches/` directory, preserving

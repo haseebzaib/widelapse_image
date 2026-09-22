@@ -2,6 +2,8 @@
 import importlib.machinery
 import importlib.util
 import json
+import shutil
+import subprocess
 from pathlib import Path
 import tempfile
 import unittest
@@ -12,6 +14,37 @@ loader = importlib.machinery.SourceFileLoader('widelapse_network', str(PATH))
 spec = importlib.util.spec_from_loader(loader.name, loader)
 n = importlib.util.module_from_spec(spec)
 loader.exec_module(n)
+
+
+class InstallerTests(unittest.TestCase):
+    def test_installer_preserves_build_resolver(self):
+        # Execute the installer with absolute filesystem paths redirected to a
+        # temporary root. Only systemctl and dependency probes are stubbed.
+        # Real install/rm/ln operations run, never against host system paths.
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            assets = root/'tmp/overlay/widelapse-network'
+            shutil.copytree(PATH.parent, assets)
+            (root/'etc/systemd/system').mkdir(parents=True)
+            resolver = root/'etc/resolv.conf'
+            resolver.write_text('nameserver 192.0.2.53\n')
+            inode = resolver.stat().st_ino
+            stub = root/'stubs'; stub.mkdir()
+            for name in ('systemctl', 'nmcli', 'mmcli', 'qmicli', 'rfkill', 'iw'):
+                f = stub/name; f.write_text('#!/bin/sh\nexit 0\n'); f.chmod(0o755)
+            python = root/'usr/bin/python3'; python.parent.mkdir(parents=True)
+            python.write_text('#!/bin/sh\nexit 0\n'); python.chmod(0o755)
+            script = (assets/'install.sh').read_text()
+            # Single regex pass avoids replacing prefixes in the temporary path.
+            import re, os
+            script = re.sub(r'/(etc|usr|tmp|run)/', lambda m: td + m.group(0), script)
+            subprocess.run(['bash', '-c', script], check=True, capture_output=True,
+                           env={**os.environ, 'PATH': str(stub) + ':' + os.environ['PATH']})
+            self.assertFalse(resolver.is_symlink())
+            self.assertEqual(resolver.stat().st_ino, inode)
+            self.assertEqual(resolver.read_text(), 'nameserver 192.0.2.53\n')
+            self.assertTrue((root/'usr/local/bin/widelapse-network').exists())
+            self.assertTrue((root/'etc/systemd/system/widelapse-network.service').exists())
 
 
 class ConfigTests(unittest.TestCase):
