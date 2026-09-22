@@ -22,7 +22,8 @@ widelapse_image/
 ├── userpatches/                  # Our configuration, patches, and image scripts
 │   ├── config-widelapse.conf
 │   ├── device-setup/             # Persistent mount and SSH identity setup
-│   └── rauc/                     # OTA configuration and scripts
+│   ├── rauc/                     # OTA configuration and scripts
+│   └── network/                  # Ethernet/Wi-Fi/cellular policy and JSON API
 └── build/                       # Local Armbian checkout; ignored by Git
 ```
 
@@ -48,6 +49,9 @@ Skip cloning if you already have the Armbian checkout. The recorded revision
 is this project's baseline; do not change revisions during a running build.
 Recording this revision alone does not guarantee byte-for-byte identical images:
 external packages and source downloads can change too.
+
+See [connectivity configuration and board tests](userpatches/network/README.md)
+for Ethernet → Wi-Fi → cellular selection and the networking-backend transition.
 
 ## Build
 

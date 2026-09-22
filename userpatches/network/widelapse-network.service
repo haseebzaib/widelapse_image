@@ -1,0 +1,21 @@
+[Unit]
+Description=Widelapse Ethernet, Wi-Fi and cellular internet selection
+Requires=NetworkManager.service widelapse-init-directories.service
+PartOf=NetworkManager.service
+Wants=ModemManager.service systemd-resolved.service
+After=NetworkManager.service ModemManager.service systemd-resolved.service widelapse-init-directories.service
+RequiresMountsFor=/opt/widelapse
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/widelapse-network --daemon
+ExecReload=/usr/local/bin/widelapse-network --reload
+Restart=on-failure
+RestartSec=5
+RuntimeDirectory=widelapse-network
+RuntimeDirectoryMode=0700
+UMask=0077
+TimeoutStartSec=180
+
+[Install]
+WantedBy=multi-user.target

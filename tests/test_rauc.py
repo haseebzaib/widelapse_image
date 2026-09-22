@@ -37,7 +37,10 @@ class LayoutTests(unittest.TestCase):
     def test_package_hook_executes_as_one_command(self):
         code = 'enable_extension() { :; }; add_packages_to_image() { printf "%s\\n" "$@"; }; source "$1"; user_config__widelapse_packages'
         result = subprocess.check_output(['bash', '-c', code, 'test', str(ROOT/'userpatches/config-widelapse.conf')], text=True)
-        self.assertEqual(result.splitlines(), ['net-tools', 'openssh-server', 'fail2ban'])
+        self.assertEqual(result.splitlines()[:3], ['net-tools', 'openssh-server', 'fail2ban'])
+        self.assertIn('network-manager', result.splitlines())
+        self.assertIn('modemmanager', result.splitlines())
+        self.assertIn('gir1.2-nm-1.0', result.splitlines())
 
     def test_rauc_does_not_target_persistent_data_or_selector(self):
         cfg = configparser.ConfigParser()

@@ -20,3 +20,13 @@ PY
 bash -n userpatches/config-widelapse.conf
 bash -n userpatches/customize-image.sh
 bash -n userpatches/extensions/widelapse-rauc.sh
+
+# Check custom installers and the networking daemon before starting a build.
+bash -n userpatches/device-setup/install.sh
+bash -n userpatches/rauc/install.sh
+bash -n userpatches/network/install.sh
+python3 - <<'PYTHON'
+import ast
+from pathlib import Path
+ast.parse(Path('userpatches/network/widelapse-network').read_text())
+PYTHON

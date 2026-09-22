@@ -1,0 +1,528 @@
+#!/usr/bin/python3
+"""Widelapse uplink policy. NetworkManager owns links; ModemManager owns modems."""
+import argparse
+from concurrent.futures import ThreadPoolExecutor
+import copy
+import fcntl
+import hashlib
+import ipaddress
+import json
+import os
+from pathlib import Path
+import re
+import select
+import socket
+import ssl
+import subprocess
+import sys
+import tempfile
+import time
+import uuid
+
+CONFIG = Path('/opt/widelapse/configs/network.json')
+RUN = Path('/run/widelapse-network')
+PROFILES = Path('/run/NetworkManager/system-connections')
+KINDS = ('eth', 'wifi', 'cellular')
+DEFAULT = {
+    'eth': {'enabled': True, 'interface': 'end0', 'ipv4': 'dhcp'},
+    'wifi': {'enabled': True, 'interface': 'wlan0', 'networks': []},
+    'cellular': {'enabled': True, 'modem': 'auto', 'apn': '', 'username': '',
+                 'password': '', 'sim_pin': '', 'allow_roaming': True},
+    'policy': {'priority': list(KINDS), 'check_interval_seconds': 10,
+               'failure_threshold': 3, 'recovery_threshold': 3,
+               'probe_timeout_seconds': 3,
+               'probe_targets': [
+                   {'address': '1.1.1.1', 'port': 443, 'tls_server_name': 'one.one.one.one'},
+                   {'address': '8.8.8.8', 'port': 443, 'tls_server_name': 'dns.google'}]}}
+
+
+def validate(raw):
+    def require(ok, message):
+        if not ok:
+            raise ValueError(message)
+    require(isinstance(raw, dict), 'config must be an object')
+    require(not raw.keys() - DEFAULT.keys(), 'unknown config section')
+    cfg = copy.deepcopy(DEFAULT)
+    for section, values in raw.items():
+        require(isinstance(values, dict), section + ' must be an object')
+        require(not values.keys() - cfg[section].keys(), 'unknown option in ' + section)
+        cfg[section].update(values)
+    for kind in KINDS:
+        require(type(cfg[kind]['enabled']) is bool, kind + '.enabled must be boolean')
+    for kind in ('eth', 'wifi'):
+        value = cfg[kind]['interface']
+        require(isinstance(value, str) and re.fullmatch(r'[A-Za-z0-9_.-]{1,15}', value), 'invalid interface name')
+    require(cfg['eth']['interface'] != cfg['wifi']['interface'], 'interfaces must differ')
+    require(cfg['eth']['ipv4'] == 'dhcp', 'only Ethernet DHCP is supported')
+    nets = cfg['wifi']['networks']
+    require(isinstance(nets, list) and len(nets) <= 20, 'wifi.networks must be an array of up to 20 entries')
+    seen = set()
+    for net in nets:
+        require(isinstance(net, dict) and not net.keys() - {'ssid', 'password'}, 'invalid Wi-Fi entry')
+        ssid, password = net.get('ssid'), net.get('password', '')
+        require(isinstance(ssid, str) and 1 <= len(ssid.encode()) <= 32 and '\x00' not in ssid, 'invalid SSID')
+        require(ssid not in seen, 'duplicate SSID'); seen.add(ssid)
+        require(isinstance(password, str) and '\x00' not in password, 'invalid Wi-Fi password')
+        require(password == '' or 8 <= len(password) <= 63 or bool(re.fullmatch('[0-9a-fA-F]{64}', password)), 'Wi-Fi password must be empty, 8-63 characters, or 64 hex digits')
+    c = cfg['cellular']
+    require(c['modem'] == 'auto', 'this version supports one automatically discovered modem')
+    require(type(c['allow_roaming']) is bool, 'allow_roaming must be boolean')
+    for key in ('apn', 'username', 'password', 'sim_pin'):
+        require(isinstance(c[key], str) and len(c[key]) <= 256 and '\x00' not in c[key], 'invalid cellular credential field')
+    require(not c['sim_pin'] or bool(re.fullmatch('[0-9]{4,8}', c['sim_pin'])), 'SIM PIN must contain 4-8 digits')
+    p = cfg['policy']
+    require(isinstance(p['priority'], list) and len(p['priority']) == 3 and all(isinstance(x, str) for x in p['priority']) and set(p['priority']) == set(KINDS), 'priority must contain eth, wifi, cellular once each')
+    for key, low, high in [('check_interval_seconds', 2, 300), ('probe_timeout_seconds', 1, 10), ('failure_threshold', 1, 20), ('recovery_threshold', 1, 20)]:
+        require(type(p[key]) is int and low <= p[key] <= high, 'invalid policy.' + key)
+    require(isinstance(p['probe_targets'], list) and 1 <= len(p['probe_targets']) <= 4, 'provide 1-4 probe targets')
+    for target in p['probe_targets']:
+        require(isinstance(target, dict) and set(target) == {'address', 'port', 'tls_server_name'}, 'invalid probe target')
+        try:
+            ipaddress.IPv4Address(target['address'])
+        except (ValueError, TypeError):
+            raise ValueError('probe address must be an IPv4 literal') from None
+        require(type(target['port']) is int and 1 <= target['port'] <= 65535, 'invalid probe port')
+        require(isinstance(target['tls_server_name'], str) and bool(re.fullmatch(r'[A-Za-z0-9.-]{1,253}', target['tls_server_name'])), 'invalid TLS server name')
+    return cfg
+
+
+def read_config(path=CONFIG):
+    if not path.exists():
+        return validate({}), 'defaults'
+    stat = path.stat()
+    if stat.st_uid != 0 or stat.st_mode & 0o077:
+        raise ValueError('network.json must be owned by root with mode 600')
+    if stat.st_size > 65536:
+        raise ValueError('configuration is too large')
+    try:
+        raw = json.loads(path.read_text())
+    except (ValueError, UnicodeError):
+        raise ValueError('invalid JSON configuration') from None
+    return validate(raw), 'file'
+
+
+def atomic(path, text, mode=0o600):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(dir=path.parent, prefix='.widelapse-')
+    try:
+        os.fchmod(fd, mode)
+        with os.fdopen(fd, 'w') as f:
+            f.write(text)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, path)
+    finally:
+        if os.path.exists(tmp):
+            os.unlink(tmp)
+
+
+def command(*args, required=True):
+    try:
+        p = subprocess.run(args, capture_output=True, text=True, timeout=20,
+                           env={**os.environ, 'LC_ALL': 'C'})
+    except (OSError, subprocess.TimeoutExpired):
+        if required:
+            raise RuntimeError(args[0] + ' unavailable or timed out') from None
+        return ''
+    if p.returncode and required:
+        # Never echo subprocess output/arguments, which might include credentials.
+        raise RuntimeError(args[0] + ' operation failed')
+    return p.stdout if p.returncode == 0 else ''
+
+
+def bindings():
+    import gi
+    gi.require_version('NM', '1.0')
+    from gi.repository import GLib, NM
+    return GLib, NM
+
+
+def profiles(cfg):
+    GLib, NM = bindings()
+    result = {}
+    def add(kind, suffix, extra, iface=None, priority=0):
+        name = 'widelapse-' + kind + suffix
+        uid = str(uuid.uuid5(uuid.NAMESPACE_DNS, name))
+        groups = {'connection': {'id': name, 'uuid': uid,
+                  'type': {'eth': '802-3-ethernet', 'wifi': '802-11-wireless', 'cellular': 'gsm'}[kind],
+                  'autoconnect': 'true', 'autoconnect-priority': str(priority)},
+                  'ipv4': {'method': 'auto', 'route-metric': str(100 + 100 * cfg['policy']['priority'].index(kind)),
+                           'dns-priority': '100', 'dns-search': '~.;'},
+                  'ipv6': {'method': 'disabled'}}
+        if iface:
+            groups['connection']['interface-name'] = iface
+        groups.update(extra)
+        kf = GLib.KeyFile()
+        for group, values in groups.items():
+            for key, value in values.items():
+                kf.set_string(group, key, value)
+        # SSID is a byte array: preserves semicolons, spaces and non-ASCII names.
+        if kind == 'wifi':
+            kf.set_value('wifi', 'ssid', ';'.join(str(b) for b in extra['wifi']['ssid'].encode()) + ';')
+        connection = NM.keyfile_read(kf, '/', NM.KeyfileHandlerFlags.NONE, None, None)
+        connection.verify()
+        connection.verify_secrets()
+        result[uid] = (name, kf.to_data()[0], kind)
+    if cfg['eth']['enabled']:
+        add('eth', '', {'ethernet': {'auto-negotiate': 'true'}}, cfg['eth']['interface'])
+    if cfg['wifi']['enabled']:
+        for i, net in enumerate(cfg['wifi']['networks']):
+            extra = {'wifi': {'ssid': net['ssid'], 'mode': 'infrastructure'}}
+            if net.get('password'):
+                extra['wifi-security'] = {'key-mgmt': 'wpa-psk', 'psk': net['password']}
+            add('wifi', '-' + hashlib.sha256(net['ssid'].encode()).hexdigest()[:12], extra, cfg['wifi']['interface'], 100-i)
+    c = cfg['cellular']
+    if c['enabled']:
+        # Leave APN unset for provider-database lookup; an explicit APN wins.
+        gsm = {'auto-config': 'false' if c['apn'] else 'true', 'home-only': str(not c['allow_roaming']).lower()}
+        for key in ('apn', 'username', 'password'):
+            if c[key]:
+                gsm[key] = c[key]
+        # PIN is sent once via D-Bus with a persistent failure guard, never in NM profiles.
+        add('cellular', '', {'gsm': gsm})
+    return result
+
+
+class Health:
+    def __init__(self):
+        self.states = {kind: {'healthy': False, 'successes': 0, 'failures': 0} for kind in KINDS}
+    def update(self, kind, connected, success, policy):
+        s = self.states[kind]
+        if not connected:
+            s.update(healthy=False, successes=0, failures=0)
+        elif success:
+            s['successes'] += 1; s['failures'] = 0
+            if s['successes'] >= policy['recovery_threshold']:
+                s['healthy'] = True
+        else:
+            s['failures'] += 1; s['successes'] = 0
+            if s['failures'] >= policy['failure_threshold']:
+                s['healthy'] = False
+    def choose(self, policy):
+        return next((k for k in policy['priority'] if self.states[k]['healthy']), None)
+
+
+def probe(interface, policy):
+    """TLS handshake through exactly this link, with no system DNS dependency."""
+    context = ssl.create_default_context()
+    for target in policy['probe_targets']:
+        try:
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+                sock.settimeout(policy['probe_timeout_seconds'])
+                sock.setsockopt(socket.SOL_SOCKET, socket.SO_BINDTODEVICE, interface.encode() + b'\0')
+                sock.connect((target['address'], target['port']))
+                with context.wrap_socket(sock, server_hostname=target['tls_server_name']):
+                    return True
+        except (OSError, ssl.SSLError):
+            continue
+    return False
+
+
+class Manager:
+    def __init__(self):
+        self.cfg = None
+        self.source = None
+        self.entries = {}
+        self.health = Health()
+        self.status = {'ready': False}
+        self.applied = {}
+        self.config_error = None
+        self.signal_modems = set()
+        self.identities = {}
+
+    def apply(self, cfg, source):
+        desired = profiles(cfg)  # Validate every profile before changing anything.
+        old = {p: p.read_text() for p in PROFILES.glob('widelapse-*.nmconnection')}
+        PROFILES.mkdir(parents=True, exist_ok=True)
+        try:
+            for name, data, kind in desired.values():
+                atomic(PROFILES / (name + '.nmconnection'), data)
+            wanted = {name + '.nmconnection' for name, _, _ in desired.values()}
+            for p in old:
+                if p.name not in wanted:
+                    p.unlink()
+            command('nmcli', 'connection', 'reload')
+        except Exception:
+            for p in PROFILES.glob('widelapse-*.nmconnection'):
+                p.unlink()
+            for p, data in old.items():
+                atomic(p, data)
+            command('nmcli', 'connection', 'reload', required=False)
+            raise RuntimeError('profile installation failed; previous profiles restored') from None
+        # Stop removed/changed active profiles only; unrelated links remain intact.
+        GLib, NM = bindings()
+        client = NM.Client.new(None)
+        for active in client.get_active_connections():
+            uid = active.get_uuid()
+            if active.get_id().startswith('widelapse-'):
+                if uid not in desired or (uid in self.entries and self.entries[uid][1] != desired[uid][1]):
+                    for device in active.get_devices():
+                        command('nmcli', '--wait', '0', 'device', 'disconnect', device.get_iface())
+                        command('nmcli', 'device', 'set', device.get_iface(), 'autoconnect', 'yes')
+        self.cfg, self.source, self.entries = cfg, source, desired
+        self.health = Health(); self.applied = {}; self.config_error = None
+        command('nmcli', 'networking', 'on')
+        for kind, radio in [('wifi', 'wifi'), ('cellular', 'wwan')]:
+            enabled = cfg[kind]['enabled']
+            if enabled:
+                command('rfkill', 'unblock', radio, required=False)
+            command('nmcli', 'radio', radio, 'on' if enabled else 'off')
+
+    def modem(self):
+        out = command('mmcli', '--list-modems', '--output-json', required=False)
+        paths = json.loads(out).get('modem-list', []) if out else []
+        if not paths:
+            self.signal_modems.clear()
+            return {'present': False, 'state': 'absent'}
+        if len(paths) != 1:
+            return {'present': True, 'state': 'multiple-modems-not-supported'}
+        if paths[0] not in self.signal_modems:
+            command('mmcli', '--modem', paths[0], '--signal-setup=30', required=False)
+            self.signal_modems.add(paths[0])
+        info = json.loads(command('mmcli', '--modem', paths[0], '--output-json'))['modem']
+        g, cell = info.get('generic', {}), info.get('3gpp', {})
+        result = {'present': True, 'state': g.get('state'), 'unlock_required': g.get('unlock-required'),
+                  'operator': cell.get('operator-name'), 'registration': cell.get('registration-state'),
+                  'access_technologies': g.get('access-technologies'),
+                  'signal_percent': g.get('signal-quality', {}).get('value'),
+                  'rssi_dbm': None, 'manufacturer': g.get('manufacturer'), 'model': g.get('model'),
+                  'sim_present': isinstance(g.get('sim'), str) and '/SIM/' in g['sim']}
+        try:
+            result['signal_percent'] = int(result['signal_percent'])
+        except (TypeError, ValueError):
+            result['signal_percent'] = None
+        for key in ('operator', 'registration', 'access_technologies'):
+            if result[key] == '--': result[key] = None
+        # Modem signal extensions are optional; basic signal percentage is always reported if available.
+        signals = command('mmcli', '--modem', paths[0], '--signal-get', '--output-json', required=False)
+        if signals:
+            values = json.loads(signals).get('modem', {}).get('signal', {})
+            result['radio_signals'] = values
+            for tech in ('lte', 'umts', 'gsm', 'nr5g'):
+                value = values.get(tech, {}).get('rssi')
+                if value not in (None, '--'):
+                    try:
+                        result['rssi_dbm'] = float(value)
+                    except (ValueError, TypeError):
+                        pass
+                    break
+        if self.cfg['cellular']['enabled'] and result['unlock_required'] == 'sim-pin' and self.cfg['cellular']['sim_pin']:
+            self.unlock_sim(g, result)
+        return result
+
+    def unlock_sim(self, generic, result):
+        from gi.repository import Gio, GLib
+        pin = self.cfg['cellular']['sim_pin']
+        identity = generic.get('device-identifier')
+        sim = generic.get('sim')
+        if not identity or not isinstance(sim, str) or not sim.startswith('/org/freedesktop/ModemManager1/SIM/'):
+            result['pin_status'] = 'cannot-identify-sim'; return
+        guard = CONFIG.parent / '.failed-sim-pin.json'
+        attempts = json.loads(guard.read_text()) if guard.exists() else []
+        token = hashlib.sha256((identity + ':' + pin).encode()).hexdigest()
+        if token in attempts:
+            result['pin_status'] = 'previous-attempt-failed'; return
+        atomic(guard, json.dumps(attempts + [token]))
+        try:
+            bus = Gio.bus_get_sync(Gio.BusType.SYSTEM, None)
+            bus.call_sync('org.freedesktop.ModemManager1', sim, 'org.freedesktop.ModemManager1.Sim',
+                          'SendPin', GLib.Variant('(s)', (pin,)), None, Gio.DBusCallFlags.NONE, 10000, None)
+        except Exception:
+            result['pin_status'] = 'unlock-failed'; return
+        atomic(guard, json.dumps(attempts))
+        result['pin_status'] = 'unlocked'
+
+    def links(self):
+        _, NM = bindings()
+        client = NM.Client.new(None)
+        result = {k: {'present': False, 'connected': False, 'interface': None,
+                      'addresses': [], 'signal_percent': None, 'rssi_dbm': None} for k in KINDS}
+        for device in client.get_devices():
+            active = device.get_active_connection()
+            uid = active.get_uuid() if active else None
+            iface = device.get_iface()
+            if iface == self.cfg['eth']['interface']:
+                kind = 'eth'
+            elif iface == self.cfg['wifi']['interface']:
+                kind = 'wifi'
+            elif device.get_device_type() == NM.DeviceType.MODEM:
+                kind = 'cellular'
+            else:
+                continue
+            row = result[kind]
+            ipconfig = device.get_ip4_config()
+            row.update(present=True, interface=device.get_ip_iface() or iface,
+                       control_interface=iface, state=int(device.get_state()),
+                       connected=(device.get_state() == NM.DeviceState.ACTIVATED and uid in self.entries),
+                       uuid=uid, activation=active.get_path() if active else None, addresses=[a.get_address() for a in ipconfig.get_addresses()] if ipconfig else [])
+            if kind == 'wifi':
+                ap = device.get_active_access_point()
+                if ap:
+                    row['signal_percent'] = ap.get_strength()
+                    ssid = ap.get_ssid()
+                    row['ssid'] = bytes(ssid.get_data()).decode('utf-8', 'replace') if ssid else None
+                    output = command('iw', 'dev', iface, 'link', required=False)
+                    match = re.search(r'signal:\s+(-?[0-9.]+) dBm', output)
+                    row['rssi_dbm'] = float(match[1]) if match else None
+                if self.cfg['wifi']['enabled']:
+                    command('ip', 'link', 'set', 'dev', iface, 'up', required=False)
+        return result
+
+    def tick(self):
+        rows = self.links()
+        try:
+            modem = self.modem()
+        except Exception:
+            modem = {'state': 'query-failed', 'present': None}
+        policy = self.cfg['policy']
+        for kind, row in rows.items():
+            identity = (row.get('uuid'), row.get('activation'), row['interface'])
+            if self.identities.get(kind) != identity:
+                self.health.update(kind, False, False, policy)
+                self.applied.pop(kind, None)
+                self.identities[kind] = identity
+        with ThreadPoolExecutor(max_workers=3) as pool:
+            pending = {k: pool.submit(probe, row['interface'], policy)
+                       for k, row in rows.items() if row['connected'] and self.cfg[k]['enabled']}
+            for k, row in rows.items():
+                success = pending[k].result() if k in pending else False
+                self.health.update(k, k in pending, success, policy)
+                row.update(internet=success, healthy=self.health.states[k]['healthy'], enabled=self.cfg[k]['enabled'])
+        chosen = self.health.choose(policy)
+        route_errors = []
+        # Prefer the selected DNS exclusively; other interfaces remain connected.
+        for kind, row in rows.items():
+            if not row['connected']:
+                self.applied.pop(kind, None); continue
+            metric = 50 if kind == chosen else 30000 + policy['priority'].index(kind) * 100
+            dns = -50 if kind == chosen else 100
+            signature = (row['uuid'], row.get('activation'), row['interface'], metric, dns)
+            if self.applied.get(kind) != signature:
+                try:
+                    command('nmcli', 'device', 'modify', row['control_interface'],
+                            'ipv4.route-metric', str(metric), 'ipv4.dns-priority', str(dns))
+                    self.applied[kind] = signature
+                except RuntimeError:
+                    route_errors.append(kind)
+        if chosen != self.status.get('selected'):
+            print('Selected uplink: ' + (chosen or 'none'), flush=True)
+        self.status = {'ready': True, 'updated_at': int(time.time()), 'config_source': self.source,
+                       'config_error': self.config_error, 'selected': chosen,
+                       'routing_applied': not route_errors, 'route_errors': route_errors,
+                       'links': rows, 'modem': modem}
+
+    def request(self, request):
+        op = request.get('command')
+        if op == 'reload':
+            try:
+                cfg, source = read_config()
+                self.apply(cfg, source)
+                self.tick()
+                return {'ok': True, 'config_source': source}
+            except Exception as error:
+                self.config_error = str(error) if isinstance(error, ValueError) else 'configuration application failed'
+                return {'ok': False, 'error': self.config_error}
+        if op == 'status':
+            return self.status
+        if op == 'network':
+            return {k: self.status.get(k) for k in ('selected', 'routing_applied', 'links', 'modem', 'updated_at')}
+        if op == 'rssi':
+            kind = request.get('kind')
+            if kind not in KINDS:
+                return {'ok': False, 'error': 'unknown link'}
+            row = self.status.get('modem', {}) if kind == 'cellular' else self.status.get('links', {}).get(kind, {})
+            return {'link': kind, 'rssi_dbm': row.get('rssi_dbm'), 'signal_percent': row.get('signal_percent'),
+                    'updated_at': self.status.get('updated_at')}
+        return {'ok': False, 'error': 'unknown command'}
+
+
+def daemon():
+    RUN.mkdir(parents=True, exist_ok=True)
+    lock = (RUN / 'daemon.lock').open('w')
+    fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    CONFIG.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    manager = Manager()
+    try:
+        cfg, source = read_config()
+        profiles(cfg)
+    except Exception as error:
+        cfg, source = validate({}), 'defaults-invalid-config'
+        initial_error = str(error) if isinstance(error, ValueError) else 'configuration validation failed'
+    else:
+        initial_error = None
+    manager.apply(cfg, source)
+    manager.config_error = initial_error
+    endpoint = RUN / 'control.sock'
+    endpoint.unlink(missing_ok=True)
+    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as server:
+        server.bind(str(endpoint)); os.chmod(endpoint, 0o600); server.listen(4)
+        due = 0
+        while True:
+            if time.monotonic() >= due:
+                try:
+                    manager.tick()
+                except Exception:
+                    manager.status['error'] = 'network inspection failed; will retry'
+                    print(manager.status['error'], file=sys.stderr, flush=True)
+                    manager.applied.clear()
+                due = time.monotonic() + manager.cfg['policy']['check_interval_seconds']
+            readable, _, _ = select.select([server], [], [], max(0, due - time.monotonic()))
+            if readable:
+                conn, _ = server.accept()
+                with conn:
+                    conn.settimeout(2)
+                    try:
+                        data = b''
+                        while b'\n' not in data and len(data) < 1024:
+                            chunk = conn.recv(1024)
+                            if not chunk: break
+                            data += chunk
+                        request = json.loads(data)
+                        try:
+                            response = manager.request(request)
+                        except Exception:
+                            response = {'ok': False, 'error': 'request failed'}
+                        conn.sendall((json.dumps(response) + '\n').encode())
+                    except (OSError, ValueError, AttributeError):
+                        pass
+
+
+def main():
+    p = argparse.ArgumentParser(description=__doc__)
+    group = p.add_mutually_exclusive_group(required=True)
+    group.add_argument('--daemon', action='store_true')
+    group.add_argument('--reload', '--update', action='store_true')
+    group.add_argument('--status', action='store_true')
+    group.add_argument('--network', action='store_true')
+    group.add_argument('--rssi', choices=KINDS)
+    group.add_argument('--validate', action='store_true')
+    args = p.parse_args()
+    if os.geteuid() != 0:
+        p.exit(1, 'Run as root.\n')
+    try:
+        if args.daemon:
+            daemon(); return
+        if args.validate:
+            cfg, source = read_config(); profiles(cfg)
+            print(json.dumps({'ok': True, 'config_source': source})); return
+        op = 'reload' if args.reload else 'rssi' if args.rssi else 'network' if args.network else 'status'
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
+            client.settimeout(120)
+            client.connect(str(RUN / 'control.sock'))
+            client.sendall((json.dumps({'command': op, 'kind': args.rssi}) + '\n').encode())
+            data = b''
+            while b'\n' not in data:
+                chunk = client.recv(65536)
+                if not chunk: raise RuntimeError('service closed connection')
+                data += chunk
+            response = json.loads(data)
+            print(json.dumps(response, indent=2))
+            if response.get('ok') is False: sys.exit(1)
+    except Exception as error:
+        message = str(error) if isinstance(error, ValueError) else 'operation failed; check widelapse-network.service'
+        print(json.dumps({'ok': False, 'error': message}), file=sys.stderr)
+        sys.exit(1)
+
+
+if __name__ == '__main__':
+    main()

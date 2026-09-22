@@ -1,0 +1,44 @@
+{
+  "eth": {
+    "enabled": true,
+    "interface": "end0",
+    "ipv4": "dhcp"
+  },
+  "wifi": {
+    "enabled": true,
+    "interface": "wlan0",
+    "networks": []
+  },
+  "cellular": {
+    "enabled": true,
+    "modem": "auto",
+    "apn": "",
+    "username": "",
+    "password": "",
+    "sim_pin": "",
+    "allow_roaming": true
+  },
+  "policy": {
+    "priority": [
+      "eth",
+      "wifi",
+      "cellular"
+    ],
+    "check_interval_seconds": 10,
+    "failure_threshold": 3,
+    "recovery_threshold": 3,
+    "probe_timeout_seconds": 3,
+    "probe_targets": [
+      {
+        "address": "1.1.1.1",
+        "port": 443,
+        "tls_server_name": "one.one.one.one"
+      },
+      {
+        "address": "8.8.8.8",
+        "port": 443,
+        "tls_server_name": "dns.google"
+      }
+    ]
+  }
+}

@@ -14,7 +14,7 @@ bash scripts/check-rauc-inputs.sh
 mkdir -p build/userpatches
 cp -a userpatches/. build/userpatches/
 # Keep integration assets separate from public-key/password overlay inputs.
-for component in device-setup rauc; do
+for component in device-setup rauc network; do
     # Refresh generated assets without touching provisioning inputs.
     rm -rf "build/userpatches/overlay/widelapse-$component"
     mkdir -p "build/userpatches/overlay/widelapse-$component"

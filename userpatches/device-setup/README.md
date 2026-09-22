@@ -31,7 +31,9 @@ in `/usr/local/bin`. No fscrypt setup is included.
 └── lost+found/     # Created by ext4
 ```
 
-`config`, `data`, and `releases` are not automatically created. Existing folders
+`config`, `data`, and `releases` are not automatically created by device setup.
+The separate [network service](../network/README.md) creates `configs/` for its
+optional persistent `network.json`; it does not create a credentials file. Existing folders
 and files survive OTA unchanged, including the former top-level `updates/`.
 No persistent data is deleted or migrated by this refactor. The existing SSH
 host key and RAUC status paths are unchanged. Old image-side service/script

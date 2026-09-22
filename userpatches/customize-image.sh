@@ -49,3 +49,4 @@ chmod 0755 /run/sshd
 
 bash /tmp/overlay/widelapse-device-setup/install.sh
 bash /tmp/overlay/widelapse-rauc/install.sh
+bash /tmp/overlay/widelapse-network/install.sh
