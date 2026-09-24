@@ -8,12 +8,13 @@ RequiresMountsFor=/opt/widelapse
 
 [Service]
 Type=simple
+Group=widelapse-network
 ExecStart=/usr/local/bin/widelapse-network --daemon
 ExecReload=/usr/local/bin/widelapse-network --reload
 Restart=on-failure
 RestartSec=5
 RuntimeDirectory=widelapse-network
-RuntimeDirectoryMode=0700
+RuntimeDirectoryMode=0750
 UMask=0077
 TimeoutStartSec=180
 

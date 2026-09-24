@@ -1,6 +1,7 @@
 #!/bin/bash
 set -euo pipefail
 assets=/tmp/overlay/widelapse-network
+getent group widelapse-network >/dev/null || groupadd --system widelapse-network
 install -d /usr/local/bin /usr/share/widelapse /etc/NetworkManager/conf.d /etc/sysctl.d
 install -m 755 "$assets/widelapse-network" /usr/local/bin/widelapse-network
 install -m 644 "$assets/widelapse-network.service" /etc/systemd/system/widelapse-network.service

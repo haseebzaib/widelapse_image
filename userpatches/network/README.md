@@ -15,7 +15,8 @@ or another modem manager concurrently with ModemManager.
 ## Configuration
 
 The service reads `/opt/widelapse/configs/network.json` at boot and on `--reload`.
-It creates `configs/` with mode 700 if absent, but does not create a config file.
+It prepares `configs/` with group `widelapse-network` and mode 2770 (group writable,
+new files inherit the group), but does not create a config file.
 Missing config enables all links: Ethernet DHCP, Wi-Fi radio up without an SSID,
 and automatic cellular provider settings where the provider database supports
 the SIM. Missing APN/PIN/credentials may prevent cellular data; inspect status.
@@ -24,9 +25,9 @@ No application data/release folders are created.
 Start from the installed example, then edit it on the board:
 
 ```bash
-install -d -m 700 /opt/widelapse/configs
+install -d -m 2770 -g widelapse-network /opt/widelapse/configs
 # Only copy this example if no existing config should be preserved.
-install -m 600 /usr/share/widelapse/network.example.json /opt/widelapse/configs/network.json
+install -m 660 -g widelapse-network /usr/share/widelapse/network.example.json /opt/widelapse/configs/network.json
 nano /opt/widelapse/configs/network.json
 widelapse-network --validate
 widelapse-network --reload
@@ -61,9 +62,26 @@ An example with credentials (replace placeholders):
 ```
 
 Omitted options use the defaults in `network.example.json`. Unknown options and
-invalid types are rejected. `network.json` must be root-owned and mode 600.
-The application should write a complete replacement file with these permissions
-and atomically rename it over `network.json`, then call `--reload`.
+invalid types are rejected. The script does not require root ownership or an
+exact file mode for `network.json`. It can be owned and created by the application.
+Mode 660 is a suggested way to share credentials with the application group;
+mode 600 also works when the application owns the file (the daemon runs as root).
+The application should write a complete replacement file in `configs/`, atomically
+rename it over `network.json`, then call `--reload`.
+
+One-time provisioning for your actual application account (replace `APP_USER`):
+
+```bash
+usermod -aG widelapse-network APP_USER
+# For an existing root-owned config, grant the application group access:
+chgrp widelapse-network /opt/widelapse/configs/network.json
+chmod g+rw /opt/widelapse/configs/network.json
+```
+
+Restart the application or log in again to pick up group membership. A systemd
+application unit can instead specify `SupplementaryGroups=widelapse-network`.
+Members can change network configuration and request reloads; they do not need
+root or direct access to NetworkManager. The daemon itself still runs as root.
 
 - Wi-Fi supports open networks (empty password) and WPA personal PSK networks.
   Enterprise authentication and WPA3-only configuration are not implemented.
@@ -136,7 +154,9 @@ supported. `modem: auto` avoids dependence on modem index or names such as
 
 ## Application commands
 
-Run as root (the control socket is root-only). Queries return JSON and use the
+Run as root or as a member of `widelapse-network`. The control socket is group
+accessible (660), and `--validate` needs only read access to the JSON. Queries return
+JSON and use the
 latest polling snapshot; `updated_at` is a Unix timestamp.
 
 ```bash

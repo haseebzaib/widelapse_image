@@ -30,7 +30,7 @@ class InstallerTests(unittest.TestCase):
             resolver.write_text('nameserver 192.0.2.53\n')
             inode = resolver.stat().st_ino
             stub = root/'stubs'; stub.mkdir()
-            for name in ('systemctl', 'nmcli', 'mmcli', 'qmicli', 'rfkill', 'iw'):
+            for name in ('systemctl', 'getent', 'groupadd', 'nmcli', 'mmcli', 'qmicli', 'rfkill', 'iw'):
                 f = stub/name; f.write_text('#!/bin/sh\nexit 0\n'); f.chmod(0o755)
             python = root/'usr/bin/python3'; python.parent.mkdir(parents=True)
             python.write_text('#!/bin/sh\nexit 0\n'); python.chmod(0o755)
@@ -55,6 +55,23 @@ class ConfigTests(unittest.TestCase):
         self.assertTrue(all(cfg[k]['enabled'] for k in n.KINDS))
         self.assertEqual(cfg['wifi']['networks'], [])
         self.assertTrue(cfg['cellular']['allow_roaming'])
+
+    def test_application_owned_config_is_accepted(self):
+        from types import SimpleNamespace
+        path = MagicMock()
+        path.exists.return_value = True
+        path.stat.return_value = SimpleNamespace(st_size=2, st_uid=1001, st_mode=0o100664)
+        path.read_text.return_value = '{}'
+        cfg, source = n.read_config(path)
+        self.assertEqual(source, 'file')
+        self.assertTrue(cfg['eth']['enabled'])
+
+    def test_nonroot_client_can_query_service(self):
+        client = MagicMock(); client.__enter__.return_value = client
+        client.recv.return_value = b'{"ready":true}\n'
+        with patch.object(n.os, 'geteuid', return_value=1001), patch.object(n.sys, 'argv', ['widelapse-network', '--status']), patch.object(n.socket, 'socket', return_value=client), patch('builtins.print'):
+            n.main()
+        client.connect.assert_called_once()
 
     def test_rejects_invalid_input_before_changing_connections(self):
         bad = [[], {'eth': {'enabled': 'false'}}, {'wifi': {'interface': 'bad;name'}},

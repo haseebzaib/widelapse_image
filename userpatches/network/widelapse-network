@@ -4,6 +4,7 @@ import argparse
 from concurrent.futures import ThreadPoolExecutor
 import copy
 import fcntl
+import grp
 import hashlib
 import ipaddress
 import json
@@ -90,8 +91,6 @@ def read_config(path=CONFIG):
     if not path.exists():
         return validate({}), 'defaults'
     stat = path.stat()
-    if stat.st_uid != 0 or stat.st_mode & 0o077:
-        raise ValueError('network.json must be owned by root with mode 600')
     if stat.st_size > 65536:
         raise ValueError('configuration is too large')
     try:
@@ -440,7 +439,12 @@ def daemon():
     RUN.mkdir(parents=True, exist_ok=True)
     lock = (RUN / 'daemon.lock').open('w')
     fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-    CONFIG.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    access_gid = grp.getgrnam('widelapse-network').gr_gid
+    os.chown(RUN, -1, access_gid)
+    os.chmod(RUN, 0o750)
+    CONFIG.parent.mkdir(mode=0o2770, parents=True, exist_ok=True)
+    os.chown(CONFIG.parent, -1, access_gid)
+    os.chmod(CONFIG.parent, 0o2770)
     manager = Manager()
     try:
         cfg, source = read_config()
@@ -455,7 +459,10 @@ def daemon():
     endpoint = RUN / 'control.sock'
     endpoint.unlink(missing_ok=True)
     with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as server:
-        server.bind(str(endpoint)); os.chmod(endpoint, 0o600); server.listen(4)
+        server.bind(str(endpoint))
+        os.chown(endpoint, -1, access_gid)
+        os.chmod(endpoint, 0o660)
+        server.listen(4)
         due = 0
         while True:
             if time.monotonic() >= due:
@@ -497,8 +504,8 @@ def main():
     group.add_argument('--rssi', choices=KINDS)
     group.add_argument('--validate', action='store_true')
     args = p.parse_args()
-    if os.geteuid() != 0:
-        p.exit(1, 'Run as root.\n')
+    if args.daemon and os.geteuid() != 0:
+        p.exit(1, 'The daemon must run as root.\n')
     try:
         if args.daemon:
             daemon(); return
