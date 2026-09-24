@@ -25,27 +25,41 @@ for _ in $(seq 1 40); do
     if nmcli general status >/dev/null 2>&1; then break; fi
     sleep 0.25
 done
-# Real NM activation and route reapply, on isolated dummy interfaces.
+# Real NM activation and independent policy routing, on isolated dummy interfaces.
 for pair in 'wltest0 10.240.0.2/24 10.240.0.1 100' 'wltest1 10.241.0.2/24 10.241.0.1 200'; do
     read -r iface address gateway metric <<< "$pair"
     nmcli connection add type dummy ifname "$iface" con-name "$iface" ipv4.method manual ipv4.addresses "$address" ipv4.gateway "$gateway" ipv4.dns 1.1.1.1 ipv4.route-metric "$metric" ipv6.method disabled >/dev/null
     nmcli --wait 10 connection up "$iface" >/dev/null
 done
-nmcli device modify wltest0 ipv4.route-metric 30000 ipv4.dns-priority 100 >/dev/null
-nmcli device modify wltest1 ipv4.route-metric 50 ipv4.dns-priority -50 >/dev/null
-python3 - <<'PY'
-import json,subprocess
-routes=json.loads(subprocess.check_output(['ip','-j','-4','route','show','default']))
-assert any(r.get('dev') == 'wltest0' and r.get('metric') == 30000 for r in routes), routes
-assert any(r.get('dev') == 'wltest1' and r.get('metric') == 50 for r in routes), routes
-import gi
-gi.require_version('NM','1.0')
-from gi.repository import NM
-c=NM.Client.new(None)
-d=c.get_device_by_iface('wltest1')
-assert d.get_ip_iface() == 'wltest1'
-assert d.get_state() == NM.DeviceState.ACTIVATED
-PY
+# This container has no systemd to prepare the service runtime directory.
+chown systemd-resolve:systemd-resolve /run/systemd/resolve
+/usr/lib/systemd/systemd-resolved >/tmp/resolved.log 2>&1 &
+sleep 1
+python3 - <<'PYTEST'
+import json, subprocess, runpy
+m=runpy.run_path('/usr/local/bin/widelapse-network')
+manager=m['Manager']()
+rows={kind: {'interface': iface, 'addresses': [address], 'gateway': gateway,
+             'ip_ready': True, 'dns': ['1.1.1.1']}
+      for kind,iface,address,gateway in [('eth','wltest0','10.240.0.2','10.240.0.1'),
+                                         ('cellular','wltest1','10.241.0.2','10.241.0.1')]}
+def read(*args):
+    return json.loads(subprocess.check_output(['ip','-N','-j','-4',*args]))
+before=read('address','show')
+for chosen in ['eth','cellular','eth','cellular',None]:
+    manager.routes(rows,chosen)
+    assert not manager.dns(rows,chosen)
+    routes=read('route','show','default')
+    owned=[r for r in routes if r.get('metric') == 5]
+    assert len(owned) == (1 if chosen else 0), routes
+    if chosen:
+        assert owned[0]['dev'] == rows[chosen]['interface'], routes
+        assert str(owned[0]['protocol']) == '242', routes
+    for iface,metric in [('wltest0',100),('wltest1',200)]:
+        assert any(r.get('dev') == iface and r.get('metric') == metric for r in routes), routes
+    assert read('address','show') == before, 'Policy changed interface addresses'
+print('PASS: repeated route/DNS switching preserves addresses and NM defaults')
+PYTEST
 # Bring policy profiles up and exercise daemon/client over its real Unix socket.
 mkdir -p /opt/widelapse/configs
 printf '{"eth":{"interface":"wltest0"},"wifi":{"enabled":false},"cellular":{"enabled":false}}\n' > /opt/widelapse/configs/network.json

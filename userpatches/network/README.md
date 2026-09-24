@@ -140,12 +140,32 @@ server; they don't independently test the uplink's DNS service. Blocked probe
 endpoints can report a usable network unhealthy. Configure suitable endpoints for
 your deployment. Standby cellular probes consume data.
 
-The selected connection gets metric 50 and exclusive DNS priority via
-systemd-resolved. Standby defaults get metrics 30000+. LAN-connected routes stay
-available, including Ethernet SSH even if Ethernet has no internet. When none
-qualifies, status says `selected: null`; high-metric routes remain for recovery
-and bootstrap. This is not a traffic-blocking policy or a bandwidth aggregator.
-Existing TCP sessions may disconnect on a switch. Clients must reconnect.
+The policy adds one default route at metric 5, protocol 242, for the selected
+uplink. Those identifiers are reserved for this service. NetworkManager's base
+routes (metrics 100/200/300), negotiated IP addresses and LAN routes remain intact.
+The service never reapplies live NetworkManager IP settings: doing that caused
+SIM7600/QMI to lose its negotiated IPv4 address while still reporting connected.
+Actual kernel addresses are checked before a link qualifies for internet probes.
+
+NetworkManager's DNS management is disabled; the service configures
+systemd-resolved directly with the selected link's DNS servers. Every polling
+cycle reconciles routing and DNS, including after DHCP renewals or reconnects.
+Status exposes `ip_ready`, `routing_applied`, `dns_applied` and error lists.
+When no link qualifies, `selected` is null and NetworkManager's base routes remain
+for bootstrap/recovery. Stopping the service removes its extra default route and
+restores DNS from the first connected managed uplink in priority order.
+
+This is not a traffic-blocking policy or a bandwidth aggregator. Standby cellular
+health probes consume data. Existing TCP sessions may disconnect on a switch;
+applications must reconnect.
+
+Deploy this change with the script, systemd unit **and** `90-widelapse.conf` together
+through a rebuilt image/OTA bundle, then reboot. Updating only the script leaves
+NetworkManager competing for DNS management. On the board, verify `ip -4 address`,
+`ip -4 route`, `resolvectl status` and `widelapse-network --status`. From UART,
+disconnect Ethernet and Wi-Fi, verify cellular becomes selected with an IPv4
+address and working DNS/internet, then restore them and verify failback. Container
+tests do not replace this physical modem test.
 
 This first version manages **IPv4 only**. Managed profiles disable IPv6 so IPv6
 cannot bypass the selected uplink. Static addresses and multiple modems are not
@@ -222,7 +242,7 @@ SSH, not all three uplinks; perform these tests before remote deployment.
 From the project root, run `python3 -m unittest discover -s tests -v`.
 Real profile parsing tests require host `python3-gi` and `gir1.2-nm-1.0`.
 The disposable Trixie smoke test installs packages only inside its container and
-checks the installer, actual route-metric reapplication, and the Unix-socket API:
+checks the installer, repeated policy route/DNS switching without changing interface addresses, and the Unix-socket API:
 
 ```bash
 docker run --rm --cap-add NET_ADMIN --cap-add NET_RAW \

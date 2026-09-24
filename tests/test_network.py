@@ -133,14 +133,95 @@ class PolicyTests(unittest.TestCase):
         context.wrap_socket.assert_called_once_with(sock, server_hostname='one.one.one.one')
 
     def test_failed_routes_are_reported_and_retried(self):
-        m = n.Manager(); m.cfg = n.validate({})
-        rows = {k: {'connected': k == 'eth', 'interface': 'end0' if k == 'eth' else None,
+        m = n.Manager(); m.cfg = n.validate({'policy': {'recovery_threshold': 1}})
+        rows = {k: {'connected': k == 'eth', 'ip_ready': k == 'eth',
+                    'interface': 'end0' if k == 'eth' else None,
                     'control_interface': 'end0', 'uuid': 'test'} for k in n.KINDS}
-        with patch.object(m, 'links', return_value=rows), patch.object(m, 'modem', return_value={}), patch.object(n, 'probe', return_value=True), patch.object(n, 'command', side_effect=RuntimeError('failed')):
-            m.tick()
+        with patch.object(m, 'links', return_value=rows), patch.object(m, 'modem', return_value={}), patch.object(n, 'probe', return_value=True), patch.object(m, 'routes', side_effect=RuntimeError('failed')) as route, patch.object(m, 'dns') as dns:
+            m.tick(); m.tick()
         self.assertFalse(m.status['routing_applied'])
         self.assertEqual(m.status['route_errors'], ['eth'])
-        self.assertNotIn('eth', m.applied)
+        self.assertEqual(route.call_count, 2)
+        dns.assert_not_called()
+
+
+class RoutingTests(unittest.TestCase):
+    def setUp(self):
+        self.manager = n.Manager()
+        self.rows = {'cellular': {'interface': 'wwu1i5', 'addresses': ['10.54.44.102'],
+                                 'gateway': '10.54.44.101', 'ip_ready': True, 'dns': ['39.39.39.39']}}
+
+    def test_switch_adds_only_owned_route_never_reapplies_link(self):
+        with patch.object(n, 'command', side_effect=['[]', '']) as cmd:
+            self.manager.routes(self.rows, 'cellular')
+        self.assertEqual(cmd.call_args.args, ('ip', '-4', 'route', 'replace', 'default', 'via',
+                          '10.54.44.101', 'dev', 'wwu1i5', 'src', '10.54.44.102',
+                          'proto', '242', 'metric', '5', 'onlink'))
+        self.assertFalse(any('nmcli' in c.args or 'flush' in c.args or 'address' in c.args for c in cmd.call_args_list))
+
+    def test_route_is_repaired_after_external_removal(self):
+        with patch.object(n, 'command', side_effect=['[]', '', '[]', '']) as cmd:
+            self.manager.routes(self.rows, 'cellular'); self.manager.routes(self.rows, 'cellular')
+        self.assertEqual(sum('replace' in c.args for c in cmd.call_args_list), 2)
+
+    def test_existing_correct_route_is_untouched(self):
+        current = [{'dst': 'default', 'metric': 5, 'protocol': '242', 'dev': 'wwu1i5',
+                    'gateway': '10.54.44.101', 'prefsrc': '10.54.44.102'}]
+        with patch.object(n, 'command', return_value=json.dumps(current)) as cmd:
+            self.manager.routes(self.rows, 'cellular')
+        cmd.assert_called_once()
+
+    def test_no_healthy_link_removes_only_owned_route(self):
+        current = [{'metric': 5, 'protocol': '242', 'dev': 'wwu1i5'},
+                   {'metric': 300, 'protocol': 'static', 'dev': 'wwu1i5'}]
+        with patch.object(n, 'command', side_effect=[json.dumps(current), '']) as cmd:
+            self.manager.routes(self.rows, None)
+        self.assertEqual(cmd.call_args.args, ('ip', '-4', 'route', 'del', 'default', 'dev', 'wwu1i5', 'proto', '242', 'metric', '5'))
+
+    def test_foreign_reserved_route_is_not_overwritten(self):
+        with patch.object(n, 'command', return_value='[{"metric":5,"protocol":"static"}]') as cmd:
+            with self.assertRaises(RuntimeError): self.manager.routes(self.rows, 'cellular')
+        cmd.assert_called_once()
+
+    def test_negotiated_gateway_change_replaces_route(self):
+        old = [{'metric': 5, 'protocol': '242', 'dev': 'wwu1i5', 'gateway': '10.1.1.1', 'prefsrc': '10.1.1.2'}]
+        with patch.object(n, 'command', side_effect=[json.dumps(old), '']) as cmd:
+            self.manager.routes(self.rows, 'cellular')
+        self.assertIn('10.54.44.102', cmd.call_args.args)
+
+    def test_dns_is_selected_without_nm_reapply_and_retried(self):
+        self.rows['eth'] = {'interface': 'end0', 'dns': ['10.42.0.1']}
+        with patch.object(Path, 'exists', return_value=True), patch.object(n, 'command', return_value='') as cmd:
+            self.assertEqual(self.manager.dns(self.rows, 'cellular'), [])
+            self.assertEqual(self.manager.dns(self.rows, 'cellular'), [])
+        self.assertTrue(all(c.args[0] == 'resolvectl' for c in cmd.call_args_list))
+        self.assertIn(unittest.mock.call('resolvectl', 'dns', 'wwu1i5', '39.39.39.39'), cmd.call_args_list)
+        self.assertIn(unittest.mock.call('resolvectl', 'dns', 'end0', ''), cmd.call_args_list)
+
+    def test_kernel_addresses_override_stale_networkmanager_address(self):
+        from unittest.mock import MagicMock
+        m = self.manager; m.cfg = n.validate({}); m.entries = {'cellular-uuid': None}
+        nm = MagicMock(); device = MagicMock()
+        nm.Client.new.return_value.get_devices.return_value = [device]
+        device.get_iface.return_value = 'cdc-wdm0'
+        device.get_ip_iface.return_value = 'wwu1i5'
+        device.get_device_type.return_value = nm.DeviceType.MODEM
+        device.get_state.return_value = nm.DeviceState.ACTIVATED
+        device.get_active_connection.return_value.get_uuid.return_value = 'cellular-uuid'
+        device.get_ip4_config.return_value.get_addresses.return_value = [MagicMock()]
+        with patch.object(n, 'bindings', return_value=(None, nm)), patch.object(n, 'command', return_value='[{"ifname":"wwu1i5","addr_info":[]}]'):
+            row = m.links()['cellular']
+        self.assertTrue(row['connected'])
+        self.assertFalse(row['ip_ready'])
+        self.assertEqual(row['addresses'], [])
+
+    def test_no_ipv4_is_not_probed_or_selected(self):
+        m = self.manager; m.cfg = n.validate({})
+        rows = {k: {'connected': True, 'ip_ready': False, 'interface': k, 'uuid': k} for k in n.KINDS}
+        with patch.object(m, 'links', return_value=rows), patch.object(m, 'modem', return_value={}), patch.object(n, 'probe') as probe, patch.object(m, 'routes') as routes, patch.object(m, 'dns', return_value=[]):
+            m.tick()
+        probe.assert_not_called(); routes.assert_called_once_with(rows, None)
+        self.assertIsNone(m.status['selected'])
 
 
 class SimTests(unittest.TestCase):

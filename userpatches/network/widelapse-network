@@ -224,7 +224,6 @@ class Manager:
         self.entries = {}
         self.health = Health()
         self.status = {'ready': False}
-        self.applied = {}
         self.config_error = None
         self.signal_modems = set()
         self.identities = {}
@@ -259,7 +258,7 @@ class Manager:
                         command('nmcli', '--wait', '0', 'device', 'disconnect', device.get_iface())
                         command('nmcli', 'device', 'set', device.get_iface(), 'autoconnect', 'yes')
         self.cfg, self.source, self.entries = cfg, source, desired
-        self.health = Health(); self.applied = {}; self.config_error = None
+        self.health = Health(); self.config_error = None
         command('nmcli', 'networking', 'on')
         for kind, radio in [('wifi', 'wifi'), ('cellular', 'wwan')]:
             enabled = cfg[kind]['enabled']
@@ -334,8 +333,10 @@ class Manager:
     def links(self):
         _, NM = bindings()
         client = NM.Client.new(None)
+        kernel = json.loads(command('ip', '-j', '-4', 'address', 'show'))
+        actual = {r['ifname']: [a['local'] for a in r.get('addr_info', []) if a.get('family') == 'inet'] for r in kernel}
         result = {k: {'present': False, 'connected': False, 'interface': None,
-                      'addresses': [], 'signal_percent': None, 'rssi_dbm': None} for k in KINDS}
+                      'addresses': [], 'ip_ready': False, 'gateway': None, 'dns': [], 'signal_percent': None, 'rssi_dbm': None} for k in KINDS}
         for device in client.get_devices():
             active = device.get_active_connection()
             uid = active.get_uuid() if active else None
@@ -354,6 +355,10 @@ class Manager:
                        control_interface=iface, state=int(device.get_state()),
                        connected=(device.get_state() == NM.DeviceState.ACTIVATED and uid in self.entries),
                        uuid=uid, activation=active.get_path() if active else None, addresses=[a.get_address() for a in ipconfig.get_addresses()] if ipconfig else [])
+            row['addresses'] = actual.get(row['interface'], [])
+            row['gateway'] = ipconfig.get_gateway() if ipconfig else None
+            row['dns'] = list(ipconfig.get_nameservers()) if ipconfig else []
+            row['ip_ready'] = bool(row['connected'] and row['addresses'])
             if kind == 'wifi':
                 ap = device.get_active_access_point()
                 if ap:
@@ -367,6 +372,63 @@ class Manager:
                     command('ip', 'link', 'set', 'dev', iface, 'up', required=False)
         return result
 
+    def routes(self, rows, chosen):
+        """Own only one extra default route; never reapply or flush link config."""
+        routes = json.loads(command('ip', '-N', '-j', '-4', 'route', 'show', 'table', 'main', 'default'))
+        reserved = [r for r in routes if r.get('metric', 0) == 5]
+        owned = [r for r in reserved if str(r.get('protocol')) == '242']
+        if len(owned) != len(reserved):
+            raise RuntimeError('default route metric 5 is reserved but used by another owner')
+        if chosen is None:
+            for route in owned:
+                command('ip', '-4', 'route', 'del', 'default', 'dev', route['dev'],
+                        'proto', '242', 'metric', '5')
+            return
+        row = rows[chosen]
+        if not row.get('ip_ready'):
+            raise RuntimeError('selected link has no usable IPv4 configuration')
+        gateway = row.get('gateway')
+        expected = (row['interface'], gateway, row['addresses'][0])
+        if len(owned) == 1 and (owned[0].get('dev'), owned[0].get('gateway'), owned[0].get('prefsrc')) == expected:
+            return
+        args = ['ip', '-4', 'route', 'replace', 'default']
+        if gateway:
+            args += ['via', gateway]
+        args += ['dev', row['interface'], 'src', row['addresses'][0], 'proto', '242', 'metric', '5']
+        if gateway:
+            args += ['onlink']
+        command(*args)
+
+    def dns(self, rows, chosen):
+        """Reconcile resolved directly, including after DHCP renewals/restarts."""
+        errors = []
+        # Configure the new winner before clearing old links. No modem reapply.
+        ordered = sorted(rows, key=lambda k: k != chosen)
+        for kind in ordered:
+            row = rows[kind]
+            iface = row.get('interface')
+            if not iface or not Path('/sys/class/net', iface).exists():
+                if kind == chosen:
+                    errors.append(kind)
+                continue
+            servers = row.get('dns', []) if kind == chosen else []
+            try:
+                command('resolvectl', 'dns', iface, *(servers or ['']))
+                command('resolvectl', 'domain', iface, '~.' if servers else '')
+                command('resolvectl', 'default-route', iface, 'yes' if servers else 'no')
+                if kind == chosen and not servers:
+                    errors.append(kind)
+            except RuntimeError:
+                errors.append(kind)
+        return errors
+
+    def cleanup(self):
+        # systemd runs this on stop/failure: leave NM's normal routes intact.
+        self.routes({}, None)
+        rows = self.links()
+        fallback = next((k for k in self.cfg['policy']['priority'] if rows[k].get('ip_ready')), None)
+        self.dns(rows, fallback)
+
     def tick(self):
         rows = self.links()
         try:
@@ -378,36 +440,29 @@ class Manager:
             identity = (row.get('uuid'), row.get('activation'), row['interface'])
             if self.identities.get(kind) != identity:
                 self.health.update(kind, False, False, policy)
-                self.applied.pop(kind, None)
                 self.identities[kind] = identity
         with ThreadPoolExecutor(max_workers=3) as pool:
             pending = {k: pool.submit(probe, row['interface'], policy)
-                       for k, row in rows.items() if row['connected'] and self.cfg[k]['enabled']}
+                       for k, row in rows.items() if row.get('ip_ready') and self.cfg[k]['enabled']}
             for k, row in rows.items():
                 success = pending[k].result() if k in pending else False
                 self.health.update(k, k in pending, success, policy)
                 row.update(internet=success, healthy=self.health.states[k]['healthy'], enabled=self.cfg[k]['enabled'])
         chosen = self.health.choose(policy)
         route_errors = []
-        # Prefer the selected DNS exclusively; other interfaces remain connected.
-        for kind, row in rows.items():
-            if not row['connected']:
-                self.applied.pop(kind, None); continue
-            metric = 50 if kind == chosen else 30000 + policy['priority'].index(kind) * 100
-            dns = -50 if kind == chosen else 100
-            signature = (row['uuid'], row.get('activation'), row['interface'], metric, dns)
-            if self.applied.get(kind) != signature:
-                try:
-                    command('nmcli', 'device', 'modify', row['control_interface'],
-                            'ipv4.route-metric', str(metric), 'ipv4.dns-priority', str(dns))
-                    self.applied[kind] = signature
-                except RuntimeError:
-                    route_errors.append(kind)
+        try:
+            self.routes(rows, chosen)
+        except (RuntimeError, ValueError):
+            route_errors.append(chosen or 'cleanup')
+        # With no qualified link, retain NM's baseline routing and bootstrap DNS.
+        dns_choice = chosen or next((k for k in policy['priority'] if rows[k].get('ip_ready')), None)
+        dns_errors = self.dns(rows, dns_choice) if not route_errors else ['route-update-failed']
         if chosen != self.status.get('selected'):
             print('Selected uplink: ' + (chosen or 'none'), flush=True)
         self.status = {'ready': True, 'updated_at': int(time.time()), 'config_source': self.source,
                        'config_error': self.config_error, 'selected': chosen,
                        'routing_applied': not route_errors, 'route_errors': route_errors,
+                       'dns_applied': not dns_errors, 'dns_errors': dns_errors,
                        'links': rows, 'modem': modem}
 
     def request(self, request):
@@ -424,7 +479,7 @@ class Manager:
         if op == 'status':
             return self.status
         if op == 'network':
-            return {k: self.status.get(k) for k in ('selected', 'routing_applied', 'links', 'modem', 'updated_at')}
+            return {k: self.status.get(k) for k in ('selected', 'routing_applied', 'dns_applied', 'links', 'modem', 'updated_at')}
         if op == 'rssi':
             kind = request.get('kind')
             if kind not in KINDS:
@@ -471,7 +526,7 @@ def daemon():
                 except Exception:
                     manager.status['error'] = 'network inspection failed; will retry'
                     print(manager.status['error'], file=sys.stderr, flush=True)
-                    manager.applied.clear()
+                    manager.status.update(ready=False, routing_applied=False, dns_applied=False)
                 due = time.monotonic() + manager.cfg['policy']['check_interval_seconds']
             readable, _, _ = select.select([server], [], [], max(0, due - time.monotonic()))
             if readable:
@@ -498,15 +553,24 @@ def main():
     p = argparse.ArgumentParser(description=__doc__)
     group = p.add_mutually_exclusive_group(required=True)
     group.add_argument('--daemon', action='store_true')
+    group.add_argument('--cleanup', action='store_true', help='Root-only service stop cleanup')
     group.add_argument('--reload', '--update', action='store_true')
     group.add_argument('--status', action='store_true')
     group.add_argument('--network', action='store_true')
     group.add_argument('--rssi', choices=KINDS)
     group.add_argument('--validate', action='store_true')
     args = p.parse_args()
-    if args.daemon and os.geteuid() != 0:
+    if (args.daemon or args.cleanup) and os.geteuid() != 0:
         p.exit(1, 'The daemon must run as root.\n')
     try:
+        if args.cleanup:
+            manager = Manager()
+            try:
+                manager.cfg, manager.source = read_config()
+            except Exception:
+                manager.cfg = validate({})
+            manager.entries = profiles(manager.cfg)
+            manager.cleanup(); return
         if args.daemon:
             daemon(); return
         if args.validate:

@@ -10,6 +10,7 @@ RequiresMountsFor=/opt/widelapse
 Type=simple
 Group=widelapse-network
 ExecStart=/usr/local/bin/widelapse-network --daemon
+ExecStopPost=/usr/local/bin/widelapse-network --cleanup
 ExecReload=/usr/local/bin/widelapse-network --reload
 Restart=on-failure
 RestartSec=5
