@@ -257,3 +257,17 @@ This uses Docker's isolated network, never host networking, and runs the install
 without modifications. The installer preserves the build-time `/etc/resolv.conf`
 so Armbian's subsequent apt operations retain DNS. Armbian itself creates the
 systemd-resolved stub symlink in `post_debootstrap_tweaks`, after package operations.
+
+## File-descriptor regression check
+
+The daemon retains one libnm client and dispatches its GLib context before
+reading network state. Creating a new synchronous client every poll previously
+leaked internal `anon_inode:[eventfd]` wakeup descriptors and eventually crashed
+with `Creating pipes for GWakeup: Too many open files`.
+
+Run `python3 tests/network-client-soak.py` on a Linux machine with NetworkManager
+running and the libnm Python bindings installed. This read-only check performs
+10,000 client snapshots, checks descriptor counts stay bounded, and verifies
+pending GLib callbacks are processed. It does not change network connections.
+For deployment, replace `/usr/local/bin/widelapse-network` and restart
+`widelapse-network.service`; a config reload alone does not load new Python code.

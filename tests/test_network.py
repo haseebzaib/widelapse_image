@@ -16,6 +16,32 @@ n = importlib.util.module_from_spec(spec)
 loader.exec_module(n)
 
 
+class ClientLifecycleTests(unittest.TestCase):
+    def test_reuses_client_and_dispatches_updates_before_each_snapshot(self):
+        nm = MagicMock()
+        client = nm.Client.new.return_value
+        context = client.get_main_context.return_value
+        context.pending.side_effect = [True, False, True, True, False]
+        manager = n.Manager()
+        with patch.object(n, 'bindings', return_value=(None, nm)):
+            self.assertIs(manager.network_client(), client)
+            self.assertIs(manager.network_client(), client)
+        nm.Client.new.assert_called_once_with(None)
+        self.assertEqual(context.iteration.call_count, 3)
+        context.iteration.assert_called_with(False)
+
+    def test_failed_initialization_can_retry(self):
+        nm = MagicMock()
+        client = MagicMock()
+        client.get_main_context.return_value.pending.return_value = False
+        nm.Client.new.side_effect = [RuntimeError('bus unavailable'), client]
+        manager = n.Manager()
+        with patch.object(n, 'bindings', return_value=(None, nm)):
+            with self.assertRaises(RuntimeError): manager.network_client()
+            self.assertIs(manager.network_client(), client)
+        self.assertEqual(nm.Client.new.call_count, 2)
+
+
 class InstallerTests(unittest.TestCase):
     def test_installer_preserves_build_resolver(self):
         # Execute the installer with absolute filesystem paths redirected to a
@@ -202,6 +228,7 @@ class RoutingTests(unittest.TestCase):
         from unittest.mock import MagicMock
         m = self.manager; m.cfg = n.validate({}); m.entries = {'cellular-uuid': None}
         nm = MagicMock(); device = MagicMock()
+        nm.Client.new.return_value.get_main_context.return_value.pending.return_value = False
         nm.Client.new.return_value.get_devices.return_value = [device]
         device.get_iface.return_value = 'cdc-wdm0'
         device.get_ip_iface.return_value = 'wwu1i5'

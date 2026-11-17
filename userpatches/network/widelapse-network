@@ -227,6 +227,20 @@ class Manager:
         self.config_error = None
         self.signal_modems = set()
         self.identities = {}
+        self._nm_client = None
+
+    def network_client(self):
+        # Keep one client for the process lifetime. Repeated synchronous clients
+        # retain GLib contexts/wakeup descriptors when cleanup is not dispatched.
+        if self._nm_client is None:
+            _, NM = bindings()
+            self._nm_client = NM.Client.new(None)
+        # libnm caches D-Bus state: process queued events before each snapshot,
+        # including device changes and NetworkManager disappearing/reappearing.
+        context = self._nm_client.get_main_context()
+        while context.pending():
+            context.iteration(False)
+        return self._nm_client
 
     def apply(self, cfg, source):
         desired = profiles(cfg)  # Validate every profile before changing anything.
@@ -249,7 +263,7 @@ class Manager:
             raise RuntimeError('profile installation failed; previous profiles restored') from None
         # Stop removed/changed active profiles only; unrelated links remain intact.
         GLib, NM = bindings()
-        client = NM.Client.new(None)
+        client = self.network_client()
         for active in client.get_active_connections():
             uid = active.get_uuid()
             if active.get_id().startswith('widelapse-'):
@@ -332,7 +346,7 @@ class Manager:
 
     def links(self):
         _, NM = bindings()
-        client = NM.Client.new(None)
+        client = self.network_client()
         kernel = json.loads(command('ip', '-j', '-4', 'address', 'show'))
         actual = {r['ifname']: [a['local'] for a in r.get('addr_info', []) if a.get('family') == 'inet'] for r in kernel}
         result = {k: {'present': False, 'connected': False, 'interface': None,
