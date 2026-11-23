@@ -479,8 +479,68 @@ class Manager:
                        'dns_applied': not dns_errors, 'dns_errors': dns_errors,
                        'links': rows, 'modem': modem}
 
+    def wifi_scan(self):
+        from gi.repository import Gio
+        _, NM = bindings()
+        iface = self.cfg['wifi']['interface']
+        def failure(code):
+            return {'ok': False, 'interface': iface, 'error': code, 'networks': []}
+        if not self.cfg['wifi']['enabled']:
+            return failure('wifi-disabled')
+        client = self.network_client()
+        device = client.get_device_by_iface(iface)
+        if device is None or device.get_device_type() != NM.DeviceType.WIFI:
+            return failure('wifi-interface-unavailable')
+        if not client.wireless_get_enabled() or not client.wireless_hardware_get_enabled():
+            return failure('wifi-radio-disabled')
+        previous_scan = device.get_last_scan()
+        done = {'accepted': False, 'error': False}
+        cancel = Gio.Cancellable()
+        def completed(dev, result, unused):
+            try:
+                done['accepted'] = bool(dev.request_scan_finish(result))
+                done['error'] = not done['accepted']
+            except Exception:
+                done['error'] = True
+        # Request acceptance is not scan completion. Wait for LastScan to change.
+        deadline = time.monotonic() + 15
+        try:
+            device.request_scan_async(cancel, completed, None)
+            while time.monotonic() < deadline:
+                self.network_client()
+                if done['error']:
+                    return failure('wifi-scan-rejected')
+                if done['accepted'] and device.get_last_scan() > previous_scan:
+                    break
+                time.sleep(0.1)
+            else:
+                return failure('wifi-scan-timeout')
+        finally:
+            cancel.cancel()
+        active = device.get_active_access_point()
+        active_path = active.get_path() if active else None
+        networks = []
+        for ap in device.get_access_points():
+            ssid = ap.get_ssid()
+            raw = bytes(ssid.get_data()) if ssid else b''
+            wpa, rsn = int(ap.get_wpa_flags()), int(ap.get_rsn_flags())
+            privacy = bool(int(ap.get_flags()) & 1)
+            security = ('WPA/RSN' if wpa and rsn else 'RSN' if rsn else
+                        'WPA' if wpa else 'WEP' if privacy else 'OPEN')
+            networks.append({'ssid': raw.decode('utf-8', 'replace'),
+                             'ssid_hex': raw.hex(), 'hidden': not bool(raw),
+                             'bssid': ap.get_bssid(), 'signal_percent': int(ap.get_strength()),
+                             'frequency_mhz': int(ap.get_frequency()), 'security': security,
+                             'wpa_flags': wpa, 'rsn_flags': rsn,
+                             'connected': ap.get_path() == active_path})
+        networks.sort(key=lambda row: (-row['signal_percent'], row['ssid'], row['bssid'] or ''))
+        return {'ok': True, 'interface': iface, 'updated_at': int(time.time()),
+                'networks': networks}
+
     def request(self, request):
         op = request.get('command')
+        if op == 'wifi-scan':
+            return self.wifi_scan()
         if op == 'reload':
             try:
                 cfg, source = read_config()
@@ -571,6 +631,7 @@ def main():
     group.add_argument('--reload', '--update', action='store_true')
     group.add_argument('--status', action='store_true')
     group.add_argument('--network', action='store_true')
+    group.add_argument('--wifi-scan', action='store_true', help='Scan nearby Wi-Fi access points as JSON')
     group.add_argument('--rssi', choices=KINDS)
     group.add_argument('--validate', action='store_true')
     args = p.parse_args()
@@ -590,7 +651,7 @@ def main():
         if args.validate:
             cfg, source = read_config(); profiles(cfg)
             print(json.dumps({'ok': True, 'config_source': source})); return
-        op = 'reload' if args.reload else 'rssi' if args.rssi else 'network' if args.network else 'status'
+        op = 'wifi-scan' if args.wifi_scan else 'reload' if args.reload else 'rssi' if args.rssi else 'network' if args.network else 'status'
         with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
             client.settimeout(120)
             client.connect(str(RUN / 'control.sock'))

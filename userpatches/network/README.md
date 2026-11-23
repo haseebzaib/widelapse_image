@@ -271,3 +271,54 @@ running and the libnm Python bindings installed. This read-only check performs
 pending GLib callbacks are processed. It does not change network connections.
 For deployment, replace `/usr/local/bin/widelapse-network` and restart
 `widelapse-network.service`; a config reload alone does not load new Python code.
+
+## Wi-Fi scanning
+
+Run `widelapse-network --wifi-scan` (root or a member of `widelapse-network`).
+The CLI sends `{"command":"wifi-scan"}` through the existing daemon socket.
+The daemon requests a scan on the Wi-Fi interface configured in `network.json`,
+waits for NetworkManager's LastScan timestamp to advance, and returns JSON:
+
+```json
+{
+  "ok": true,
+  "interface": "wlan0",
+  "updated_at": 1795450000,
+  "networks": [
+    {
+      "ssid": "Example WiFi",
+      "ssid_hex": "4578616d706c652057694669",
+      "hidden": false,
+      "bssid": "AA:BB:CC:DD:EE:FF",
+      "signal_percent": 75,
+      "frequency_mhz": 2412,
+      "security": "RSN",
+      "wpa_flags": 0,
+      "rsn_flags": 256,
+      "connected": false
+    }
+  ]
+}
+```
+
+Entries are access points, sorted by descending signal strength. Multiple BSSIDs
+with the same SSID remain separate. `connected` identifies the active access
+point, not the selected internet uplink. Empty/unknown SSIDs have `hidden: true`;
+non-UTF-8 bytes are replaced in the display name but preserved in `ssid_hex`.
+Security is `OPEN`, `WEP`, `WPA`, `RSN` (WPA2/WPA3 family), or `WPA/RSN`;
+the raw NetworkManager WPA/RSN flags allow more detailed interpretation.
+This does not add new security modes to the Wi-Fi connection configuration.
+NetworkManager may retain recently seen access points in its list.
+
+Scanning does not modify credentials, connection profiles or radio settings.
+If Wi-Fi is disabled, absent, blocked, or the scan is rejected/times out, the
+response has `ok: false`, an `error` code and an empty `networks` array; CLI exit
+status is 1. A completed scan with no access points has `ok: true` and an empty
+array. Errors include `wifi-disabled`, `wifi-interface-unavailable`,
+`wifi-radio-disabled`, `wifi-scan-rejected` and `wifi-scan-timeout`.
+
+A scan waits up to 15 seconds. The current single-threaded daemon processes this
+request synchronously, so policy polling and other API requests pause during the
+scan; existing connections continue running. Use on demand, not in a tight loop.
+Install the updated script and restart `widelapse-network.service` to enable the
+new command on an existing board, or include it in the next image/OTA bundle.
